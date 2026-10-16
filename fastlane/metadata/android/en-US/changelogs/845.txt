@@ -1,0 +1,8 @@
+ * Do not delete remote if old files not found on server
+ * Prevent image loading fight user scrolling
+ * Read defaultUri from sylkserver contacts in addressbook rules
+ * Added shared app/addressbookRules.js with desktop version
+ * Stamp contacts with who has modied them
+ * AB bug fixes
+ * Handle addressbook updates from other devices in real time
+ * Fix contact card layout

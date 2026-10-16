@@ -2302,7 +2302,7 @@ class VideoBox extends Component {
             return;
         }
         const myUri = this.props.accountId;
-        const conferenceDomain = this.props.defaultConferenceDomain || 'videoconference.sip2sip.info';
+        const conferenceDomain = this.props.defaultConferenceDomain || 'conference.sip2sip.info';
         const myUser = (myUri && myUri.split('@')[0]) || 'me';
         const peerUser = peerUri.split('@')[0] || 'peer';
         const parts = [myUser, peerUser].map(s => s.toLowerCase()).sort();

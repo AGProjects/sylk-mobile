@@ -30,7 +30,15 @@ changes. Documentation can always be out of date.
 
 ## 1. Architecture
 
-Three layers cooperate:
+Three clients share the addressbook of an account:
+
+- **sylk-mobile** (React Native, react-native-sylkrtc), described throughout this document.
+- **sylk-desktop** (Electron, sylkrtc.js), which follows the same rules through the same shared
+  JavaScript files. Its implementation is described in [Chapter 27](#27-sylk-desktop).
+- **Blink desktop for macOS** (Python, python3-sipsimple), which talks XCAP directly and
+  implements the same rules in Python.
+
+On the mobile, three layers cooperate:
 
 - **App (sylk-mobile).** The local SQLite `contacts` table is the source of truth for the
   UI. The app renders from SQLite and reconciles it against the server addressbook on
@@ -58,12 +66,18 @@ xcap-diff → gateway → all online devices re-fetch and reconcile.**
   "id": "string",
   "name": "display name",
   "uris": [ { "id": "...", "uri": "alice@example.com", "type": "", "attributes": {}, "default": false } ],
-  "default_uri": { "id": "...", "uri": "alice@example.com" },
+  "defaultUri": { "id": "...", "uri": "alice@example.com" },
   "dialog": { "policy": "default", "subscribe": false },
   "presence": { "policy": "default", "subscribe": false },
   "attributes": { }
 }
 ```
+
+The default URI travels as **`defaultUri`**: that is the field the gateway sends (webrtcgateway
+`models/xcap.py`, `Contact`), filled with `uris[0]` when the document names no default. The
+gateway also accepts `default_uri` on writes and renames it. A client reading a contact must
+read `defaultUri` first; reading only `default_uri` never sees the server's default
+(`addressbookRules.chosenDefaultUri` reads both, `defaultUri` first).
 
 ### Server group
 
@@ -166,6 +180,110 @@ non-phone SIP address, then a phone number, then the first URI.
 
 ---
 
+## 5b. Group attributes
+
+A group carries an `attributes` bag exactly as a contact does, and it holds one
+field:
+
+| attribute | meaning |
+|-----------|---------|
+| `kind` | what the group **is**, independent of what it is called: `calls`, `tel`, `blocked`, `conference`, `missed`, `favorites`, or absent for an ordinary user group |
+
+`blocked` matters more than the other two: it is what a client reads to decide
+whether to reject an incoming call, so a group whose identity depends on its
+name would stop blocking the moment somebody renamed it.
+
+Note what `blocked` does **not** mean. A presence policy of `block` says "do
+not tell them whether I am available" and must never decide whether a call
+rings — a user can perfectly well take calls from someone they do not share
+presence with. The two are separate lists that happen to share a word.
+
+**Why it exists.** A group's `id` belongs to whichever client created it — ours
+come from `_abGenerateServerId`, Blink's from its own allocator — and its `name`
+is a label the user may rename at any time. Neither is an identity two clients
+can agree on. Blink looked for the Calls group by name and would have created a
+second one the first time it was renamed; that second group then replicates back
+here and shows up alongside the first.
+
+`kind` is the identity that survives both. Resolution order, in every client:
+**kind → name → create.** The name fallback is permanent: every group that
+exists today predates the attribute and carries no `kind`.
+
+**Rules, and they are the same on both sides:**
+
+- Never create a group in order to stamp one. No group, no write.
+- Never overwrite a `kind` another client wrote. A value you did not write is a
+  fact about someone else's intent, not a free slot.
+- Preserve the rest of the bag (chapter 16.4 already requires this).
+- Stamp at most once per account per session: every write re-triggers
+  `dataUpdated` → reconcile, and that loop is easy to start.
+
+Values are lowercase machine words, never display text. Blink writes the same
+ones through `BlinkGroupExtension.kind`, a sipsimple `SharedSetting` that lands
+in this same XCAP attribute bag.
+
+### 5b.1 Reserved group ids
+
+The rule, and it applies to every client:
+
+> A group the software creates by itself — from calls, from missed calls, from
+> a number being a number — is not the user's group and must not depend on the
+> user's spelling of its name. It gets a reserved id.
+
+`_messages` has worked exactly that way for years. It works because only one
+client ever creates it; once two clients create the same group, an id nobody
+has to agree on in advance is the only thing that makes them the same group.
+
+| kind | reserved id | local tag | mapped name |
+|------|-------------|-----------|-------------|
+| `calls` | `_calls` | `calls` | Calls |
+| `tel` | `_tel` | `tel` | Tel |
+| `blocked` | `_blocked` | `blocked` | Blocked |
+| `conference` | `_conference` | `conference` | Conference |
+| `missed` | `_missed` | `missed` | Missed |
+| `favorites` | `_favorites` (legacy `favorites`) | `favorite` — **singular** | Favorites |
+| — | `_messages` | `messages` (device-local) | Messages |
+| — | `_deleted` | — | Deleted |
+
+The singular `favorite` is the tag this client has always stored, and
+`_abGroupNameToTag('Favorites')` maps onto it. Writing `favorites` there would
+tag every member with a string nothing else matches.
+
+`_abReservedIdForKind` supplies the id to `_abCreateGroup`, which pins it
+instead of minting one from `_abGenerateServerId`. This client deliberately did
+*not* pin ids before, and the reason has gone: it minted a server-shaped id for
+every group it created, so a pinned id would simply have lost the race. Blink
+pins the same ids now, so whichever client gets there first produces the same
+one and the second finds it.
+
+**`kind` does not go away.** An id cannot be changed: every group already in
+the wild carries the arbitrary id of whichever client created it, and the only
+way to give it a reserved one is to delete and re-create it, which drops the
+membership on every device that has not synced. The two mechanisms cover
+different populations —
+
+- `kind` identifies the groups that already exist;
+- the reserved id identifies the groups created from now on.
+
+Resolution order, in both clients: **kind → reserved id → name**. The name
+fallback is permanent, for groups that predate both.
+
+`_abReservedGroupKeys` maps ids onto reconcile keys and resolves *both*
+spellings of Favorites (`favorites` and `_favorites`) onto one key, so the
+migration can move between them without either client losing sight of the group
+in between. `_abMigrateReservedIds(ab)` performs the delete-and-re-create,
+bounded to three attempts and reading the **live** `ab.groups` each pass — a
+snapshot taken before stamping silently skips the groups stamped during the
+same pass.
+
+### 5b.2 A fold is a merge, not a removal
+
+When two groups collapse onto one reconcile key, the loser's disappearance is
+**not** a membership removal. `_abApplyServerDelete` ignores a delete when a
+surviving group shares the deleted group's key. Without that guard the fold
+stripped the tag from 17 contacts, which the next reconcile re-adopted — a
+churn loop with no end state.
+
 ## 6. Contact attributes
 
 The server contact's free-form `attributes` dict carries the cross-device fields that
@@ -207,8 +325,14 @@ the tag, resolved to the server **group id** only when talking to the server.
   `tel → Tel`, `chat → Messages`); custom tags use the tag text. The server group name is
   the displayed label. Names are case-insensitive with a Capitalized canonical form.
 - **Auto-derived categories** (`messages`, `chat`, `calls`, `recent`, `missed`) are
-  computed on each device from message and call history. They are **not** user groups and
-  are excluded from group sync entirely.
+  computed on each device from message and call history. `messages`, `chat` and `recent`
+  are **not** user groups and are excluded from group sync entirely — they carry no
+  `kind`, no other client owns them, and the server copy is per-device.
+  `calls`, `missed` and `favorites` are the exception and are **bidirectional**: when the
+  server group carries a `kind` (chapter 5b) another client created it as part of the
+  cross-client contract, so its membership is shared — this device contributes its own
+  call parties and adopts the ones other clients filed. See chapter 23 for what happened
+  when that was not true.
 - **Flag tags** (`bypassdnd`, `muted`, `noread`) and the **`caregiver`** and
   **`autoanswer`** flags are per-contact flags, not groups, and are excluded from
   group treatment — in both directions. `autoanswer` is per-device (see above) and
@@ -379,7 +503,7 @@ constraints the gateway and app honor:
 - **Schemaless attribute bags are preserved verbatim** through the gateway models, so
   organization / email / flags round-trip intact.
 - **Contact payloads** must carry a `uris[]` where each entry has its own id, a
-  `default_uri`, `dialog` and `presence` objects, a non-empty name (the URI username is
+  default URI (`defaultUri`; `default_uri` is accepted on writes, see Chapter 2), `dialog` and `presence` objects, a non-empty name (the URI username is
   used when there is no real name), and `attributes`. Ids are server-style (`id` + digits).
   Group membership is sent as full contact objects via `addGroup` / `updateGroup`.
 - **`dialog` and `presence` are preserved, not reset.** Sylk does not manage these
@@ -457,6 +581,10 @@ Sylk to act on one. A genuine delete removes the contact from XCAP first; the re
 applies because the URI is absent. Sylk also stamps removes with the action time, so a
 replayed or stale remove can never tombstone activity that happened after it.
 
+The two signals race. sylk-desktop holds a live remove whose contact is still in the
+addressbook for up to ten minutes and applies it once the addressbook shows the address gone;
+a journal replay for a live contact is dropped (Chapter 27.7).
+
 ### 16.4 Payload conventions other clients must respect
 
 To round-trip cleanly through the same document, other clients should follow the same
@@ -476,6 +604,27 @@ conventions Sylk relies on (full detail in Chapter 3, Chapter 6, Chapter 15):
   missing attribute means another client cleared it.
 - **Replace, don't append, the URI list, and de-duplicate by URI value** so repeated edits
   can't accumulate duplicate URIs on one contact.
+- **A phone number must announce itself with `+` or a leading `0`.** The detector
+  (`utils.isPhoneNumber`, `/^(\+|0)[\d\-()_\s]+$/` on the local part) deliberately
+  rejects a bare digit string, so `31208005160@sylk.link` is an ordinary SIP
+  contact and never gets `type=tel`, never reaches the PSTN canonicalisation, and
+  never lands in the Tel group. This is not an oversight to be widened. Digits
+  with no prefix are ambiguous by nature: `1233@sylk.link`, `3333@sylk.link` and
+  `4444@sylk.link` are extensions on this very account, and a rule generous
+  enough to catch `31208005160` catches those too — and misfiling one rewrites
+  its address in the shared document for every client. A number that should be
+  dialable is written `+31208005160`, by whoever adds it; a client does not get
+  to guess. Reviewed and reaffirmed 2026-09-09; the alternatives considered and
+  rejected were a home-country-code prefix test and an
+  only-when-a-canonical-twin-already-exists test.
+- **The domain goes on at the wire, never in storage.** A phone contact is stored
+  bare and the account domain is appended only when a call or a message is
+  actually sent, at the one boundary each client has for that (sylk-mobile:
+  `_wireUri` in `_sendMessage`, and `callKeepStartCall` / `CallManager.startCall`;
+  Blink: `normalize_sip_uri_for_outgoing_session`). Storing the wire form
+  instead is the mistake this rule exists to prevent — it also bypasses the
+  account's dial plan, because the PSTN rewrite is gated on the URI having no
+  domain yet.
 - **Match URI normalization.** Phone-number URIs are stored bare, without a domain; the
   conference bridge domain is swapped at the boundary (`videoconference.X ↔ conference.X`);
   IP-literal (`user@1.2.3.4`), `@local` Bonjour, and conference rooms whose username starts
@@ -675,3 +824,582 @@ out. This is **best-effort** — the
 password change has already succeeded on the server, so a re-save failure is logged but
 never surfaced as a password-change error (the next authoritative load will not repair it,
 since a saved record already exists; recovery is to change the password again or re-import).
+
+---
+
+## 23. Shared groups: the day the Calls group vanished
+
+On 2026-09-05 the account's Calls group went from 30 members to 1. This client
+deleted it — a Blink Mobile 8.4.1 handset issued
+`DELETE …/groups/id1784208880483595094913657` three seconds after connecting —
+and everything in chapters 5b.1 and 24 exists because of it.
+
+### What the heal believed
+
+The **self-heal stale dynamic groups** loop treated `calls` and `recent` as
+*locally authoritative*: they are derived on the handset from its own call log,
+so a copy of one sitting on the server can only be this device's own leftover,
+and the heal deletes it.
+
+That premise held for exactly as long as this client was the only one writing
+them. Blink desktop then started publishing a Calls group of its own, and
+nothing told the heal. It saw a server-only `Calls`, concluded it was stale,
+and removed it. Desktop's in-flight `PUT` of the same document took a
+**412 Precondition Failed**, re-`GET`, and sipsimple's reload correctly dropped
+the local group — with its 30 memberships.
+
+### The fix, in one negation
+
+```js
+_abIsDeviceLocalGroup = (key, g) =>
+    this._abAutoLocalGroups.has(key) && !this._abGroupKind(g);
+```
+
+A `kind` means another client created the group as part of the cross-client
+contract, so its membership is **shared**, not derived — the heal can no longer
+delete it, and this device adopts it instead of fighting it.
+
+`_abIsDeviceLocalName(key)` answers the same question for a group that does not
+exist on the server yet, where only the name can answer it: create the
+categories we know a kind for (Calls), never the purely derived ones (Messages,
+Recent).
+
+### Rules that came out of it
+
+- **Never delete a server group you did not create**, unless it carries no
+  `kind` *and* its key is one this device derives.
+- **A group that exists on both sides and means the same thing on both sides
+  must actually cross.** Before this, desktop published a Calls group nobody on
+  mobile read, while the handset held 33 contacts tagged `calls` that never
+  reached the server.
+- **Creation re-reads the live set.** `_abCreateGroup` gates on a snapshot and
+  then re-checks live `kind` and reserved id before writing, so two devices
+  racing to create the same group produce one group.
+
+---
+
+## 24. Startup repairs
+
+Four kinds of drift had accumulated in the shared document. All four are
+repaired automatically, by this client **and** by Blink desktop, so it does not
+matter which one the user launches first. Both sides run the same rules; the
+symmetry is the point, because a repair only one client performs is undone by
+the other.
+
+### 24.1 The conference domain
+
+`_abServerConferenceUri` rewrites `videoconference.X` → `conference.X`
+unconditionally at the server boundary, and this client never uploads the
+`videoconference.` form again. Rooms addressed the other way are not reachable
+from Blink on macOS (chapter 17 has the two-domain background).
+
+Comparison is by **domain**, not by whole address: a contact whose URI has
+already been repaired no longer matches a whole-address test, which is how a
+display name was left reading `338318@videoconference.sip2sip.info` after its
+URI had been fixed.
+
+### 24.2 Display names that echo the URI
+
+A name equal to the address, the address without `@`, or the username is not a
+name — it is the absence of one (chapter 4). For a conference room the
+replacement is the **room number**, not the whole address: `338318`, not
+`338318@conference.sip2sip.info`. Matching is on the local part, for the same
+reason as 24.1.
+
+**What a repair may write instead is narrower than what counts as an echo.** "No
+real name" decides whether a name may be *filled* (25.5). It does not license
+rewriting one echo into another. The reference is Blink's
+`echoed_name_replacement` (HistoryManager.py), which sylk-desktop ports exactly
+(`contactPayload.nameReplacement`):
+
+| stored name | address | repaired name |
+|-------------|---------|---------------|
+| `338318@videoconference.sip2sip.info` | `338318@conference.sip2sip.info` | `338318` (a room is its number) |
+| `+31618853125@sylk.link` | `+31618853125` | `+31618853125` (the number) |
+| `0034913336701` | `+34913336701` | `+34913336701` (the number, another spelling) |
+| `foo@old.example.com` | `foo@new.example.com` | `foo@new.example.com` (follows the address) |
+| `gogo@sylk.link` | `gogo@sylk.link` | **unchanged** |
+| `1233` | `1233@sylk.link` | **unchanged** (an extension is not a number) |
+| `Nissan Rustman` | anything | **unchanged** |
+
+A SIP contact named by its own full address keeps that name. Its username is not a better
+name, and often a worse one: an account with `4444@sip2sip.info`, `4444@sip1.budgetphone.nl`
+and `4444@ag-projects.com` shows three contacts called `4444` once the domains are stripped.
+Blink states the constraint as *"a name has to be no worse after this function than
+before it"*.
+
+On 2026-09-16 a sylk-desktop build that wrote the username for every echo renamed 31
+contacts on one account this way before it was caught. The origin stamps (Chapter 26) named
+the device and the pass, and the names were restored from the `was` values in Blink's
+`[ab] [origin]` log.
+
+*Open:* the mobile heal (`_abCanonicalServerContact`) replaces any echo with the default
+address, so a contact named `gogo` or `Gogo` on `gogo@sylk.link` is renamed to
+`gogo@sylk.link` here and left alone by Blink and sylk-desktop. It does not loop, because
+nobody renames it back, but the clients disagree about it.
+
+### 24.3 PSTN canonicalisation
+
+`_abCanonicalPstn` / `_abApplyLeadingZeroRule` put every phone-number URI into
+the bare E.164 form chapter 3 specifies, with an 8-digit floor so short codes
+are left alone. `_abLogPstnCanon` prints what changed.
+
+### 24.4 Filing into the kinded groups
+
+`_abFileIntoKindGroup(ab, kind, canonName, wanted, why)` and
+`_abFileConferenceContacts`: every conference contact belongs in Conference,
+every phone number in Tel, and so on. The rule is derived from the **URI**, not
+from a tag, so it is self-correcting.
+
+**Repair first, then file.** The first version filed the `videoconference.`
+rows into the Conference group without repairing them, so the group ended up
+holding addresses that could not be dialled.
+
+`_abNormalizePstnContacts(ab, sContacts)` is the generalised drift pass that
+carries all three of the above — PSTN URI, conference domain (by domain
+comparison), echoed name — over the server contacts in one walk.
+
+### 24.5 The Email group is no longer created
+
+Nothing auto-generates it, on either client. `email` joins `_abNonGroupTags`
+alongside `bypassdnd`, `muted`, `noread`, `history`, `caregiver`, `autoanswer`
+and `phone`. An Email group that already exists is left alone — deleting
+somebody's group is not a repair — so the one in the wild has to be removed by
+hand once every device is running the new build.
+
+### 24.6 What the heal may still delete
+
+The heal loop now reads, in order:
+
+```
+if (this._abGroupIsShared(g)) KEEP      // carries a kind: another client owns it
+if (healMembers)              KEEP      // it still has members we can account for
+else                          DELETE
+```
+
+`_abGroupIsShared = (g) => !!this._abGroupKind(g)` is the whole of the first
+rule, and it is the one that was missing in chapter 23.
+
+---
+
+## 25. Safe healing: E.164 addresses and adopted display names
+
+Two clients share one document and each holds a rule about how an address should
+be spelled. That is enough to build a machine that never settles: A rewrites a
+contact its way and publishes, B fetches, rewrites it back its way and
+publishes, A fetches. Nobody is malfunctioning — each step is a client
+correctly applying its own rule — and the document changes for ever.
+
+A loop needs three ingredients, and removing any one of them stops it. The
+design removes all three.
+
+### 25.1 One canon, or nothing else matters
+
+Both clients must compute the **same** canonical form, so that healing is
+idempotent not just within a client but across them:
+
+    heal(heal(x)) == heal(x)          and          heal_blink(x) == heal_mobile(x)
+
+For a PSTN address that canon is bare E.164 — `+3180081867`, no domain, `tel`
+type (R4, chapter 3). Mobile and sylk-desktop compute it with the same file,
+`addressbookRules.js` (`normalizeUri` / `canonicalPstn`); Blink uses `pstn_e164` /
+`canonical_pstn_uri`. If those two
+ever disagree about one number, no amount of scheduling saves the document:
+each client will forever "correct" the other. Scheduling is the second line of
+defence; agreement is the first.
+
+### 25.2 Heal after adopting, never before
+
+The heal runs on the **merged** state: fetch the server document, apply it
+locally, and only then look for rows to repair.
+
+    fetch → apply → settle → heal → publish
+
+Healing local rows before the snapshot arrives is worse than useless. Those rows
+are about to be overwritten by the server's copy, so the work is thrown away —
+and then the server's copy lands carrying the old spelling, which the client
+sees as fresh damage and heals again on the next launch. That is the shape of a
+loop that looks like a stubborn bug: the same contacts repaired every single
+start.
+
+- **Mobile**: the heal is triggered from `_abMarkImportFinished`, the hook that
+  fires when the addressbook is genuinely synced — never from the boot timer it
+  used to hang off.
+- **Blink**: `repair_contact_addresses()` runs from
+  `calls_group_startup_check(xcap_loaded=True)`, reached through
+  `_callsGroupAfterReload`, which `ContactListModel` schedules
+  `XCAP_SETTLE_DELAY` after the document was applied.
+
+### 25.3 Once per run, not once per change
+
+A heal triggered by a *change* is a feedback path: it sees its own published
+result come back and acts on it. A heal triggered by *startup* is not — it runs,
+converges, and stops.
+
+Both clients hold a per-run guard (mobile `_abHealedAccounts`, Blink
+`_conference_uris_repaired`). This also makes the log diagnostic: a heal that
+finds work every launch means something else is un-healing it between runs, and
+that something is the bug. Running the heal more often would hide it.
+
+### 25.4 A heal is never announced
+
+`application/sylk-addressbook-update` says "a person changed something, come and
+look". A heal is derived state: every device computes the same result from the
+same document, so telling them is redundant at best, and at worst it is the
+loop's carrier signal — A's heal wakes B, whose heal writes back, which wakes A.
+
+So every reload-driven repair runs inside a suppression scope (chapter 5 of the
+message spec): mobile for the whole of `_abRunReconcile`, Blink around
+`_callsGroupAfterReload`, sylk-desktop around its startup heal. Scope it to the work,
+never to a clock — a timed window drops a user's edit that lands inside it and lets a
+repair through on whichever account's window has expired.
+
+**Nor is a copy.** Blink keeps one addressbook for all its accounts: applying one account's
+fetched document writes the same contacts into every other account's document, through the
+same mutators a user edit uses. The `AddressbookManager.applying_remote_data` counter covered
+that stretch, but the notifications it causes are delivered later, on Blink's GUI thread,
+after the counter is back to zero. On 2026-09-17 Blink therefore announced 16 copied contacts
+to every device. python3-sipsimple now decides at the moment of posting: every
+`XCAPManagerDid*` notification carries `data.remote`, true while the posting thread is
+applying a server document (`xcap.applying_remote_document()`), and Blink ignores those.
+
+### 25.5 Display names: adopt only into a hole
+
+The same rules, plus one about precedence.
+
+A name is **data** only if someone typed it. A name that echoes the address —
+empty, equal to the URI, the URI without its `@`, the username, or any `+`/`00`
+variant of those (R3) — is the *absence* of a name wearing the address as a
+placeholder. Only the absence may be filled.
+
+    user-typed name  >  address-book name  >  server name  >  echo
+
+- Adoption is **terminal**: the moment a real name lands, the echo test stops
+  matching, so the next launch leaves it alone. That is what makes it "once"
+  without needing a flag.
+- Adoption is **into a hole on both sides**. If the server already carries a
+  real name, that name wins and the OS phonebook does not override it — two
+  clients each preferring their own real name is exactly the oscillation this
+  chapter exists to prevent. Push-up (chapter 8) still applies: a real local
+  name replaces a server *echo*, never a server name.
+- A phone contact with no card in the OS address book keeps the number as its
+  display name. That is not a failure to heal; there is simply nothing to adopt.
+
+**Between two echoes there is no authority — compute the answer.** When the
+server's name and the local name are *both* echoes, neither side is a
+tie-breaker, and treating one as such produces a loop:
+
+- Adopting the server's echo over the local one is only meaningful where a
+  canonical form exists. It exists for a **phone number** (bare E.164) and does
+  not exist for a **SIP address**. `Gogo` and `gogo@sylk.link` are both echoes of
+  `gogo@sylk.link`; one is what a person should read and the other is the raw
+  address, and there is no rule making the server's copy the better one. On
+  2026-09-09 a rule that missed this distinction rewrote 20 contacts to their own
+  addresses in a single pass. `_localNameStale` is now gated on
+  `utils.isPhoneNumber(c.uri)` for exactly that reason.
+- Even for a number, the server is a peer and not an oracle. The same rule then
+  adopted `0034913336701` over `+34913336701`, because the other client had just
+  pushed the wire form up. So the pass does not copy a name at all in this case —
+  it sets `_abCanonicalPstn(c.uri)`, a pure function of the number and the dial
+  plan that every client computes identically. Both ends converge on one string
+  and the next pass is a no-op, whichever client ran first.
+
+> When two clients disagree about a value that is *derivable*, neither adopts the
+> other's — both derive it. Adoption is for values only a person can supply.
+
+A user-typed name is not derivable, so the server remains authoritative for it
+(`sNameReal` is unchanged and still wins). An echo is derivable, so it is
+computed from the address on both sides. Blink's half of this is
+`echoed_name_replacement()`, which recognises the same `+`/`00` variants; see
+PSTN-CALLS-GROUP.md §36.2 and §40.
+
+### 25.6 The lifetime of the addressbook at start
+
+The stages, and the log line that marks each. Anything that writes to the
+document before the last of them is writing against a view it has not finished
+loading.
+
+| Stage | Mobile | Blink |
+| ----- | ------ | ----- |
+| Snapshot requested | the lib fetches on `registered` | `XCAPManagerDidChangeState` → `fetching` |
+| Snapshot arrived | `[ab] [lifecycle] snapshot FETCHED … N contacts, M groups` | `XCAPManagerDidReloadData` |
+| Being applied | `[ab] [lifecycle] applying the server addressbook (edge=…)` | `Addressbook of X: a new document arrived, applying it` |
+| Applied | `[ab] [lifecycle] applied in Nms, K write(s) issued` | manager returns to `insync` |
+| Writable | `[ab] [lifecycle] writes ENABLED` (or `BLOCKED — <reasons>`) | `Addressbook of X is in sync and open for writes` |
+| Stable | `[ab] [lifecycle] addressbook STABLE … open for writes` | — |
+| Healing | `[ab] [lifecycle] heal starting/finished` | `Addressbook: healing pass starting/finished` |
+
+Mobile's write gate is logged on the **edge**, not per call — it is consulted on
+every write, so the value would drown the log while the transition is the thing
+anyone wants: when the account became writable, and if it never did, which of
+`registered` / `connection ready` / `server snapshot` is missing.
+
+After the healing pass finishes, a contact change is a user edit by definition,
+and IS announced.
+
+### 25.7 Reading the OS phonebook, and never asking for it
+
+Adoption needs the phonebook, and reading the phonebook is what makes Android and
+iOS show a permission dialog. Those two facts pulled in opposite directions long
+enough to leave the feature dead.
+
+**How it was broken.** `getABContacts()` ran only on user intent — opening the
+Phonebook tab, the unified search, or the conference invite picker — because the
+prompt belongs on a tap. Adoption was then bolted onto the photo pass that runs
+off the `addresBookLoaded` edge. A launch where none of those three screens was
+opened never read the phonebook at all, so nothing was ever adopted, and a number
+sitting in the OS address book under a real name kept displaying as the number.
+On top of that the photo pass began with `if (avatarPhotos is empty) return`, so
+even when the phonebook *had* been read, a set of cards carrying names but no
+thumbnails aborted the pass and took the name adoption with it.
+
+**The split that resolves it.** *Prompting* is user intent; *reading* is not.
+
+- `_abAdoptPhonebookNames()` runs at the end of the heal and calls
+  `Contacts.checkPermission()`, which asks the OS what it already decided and
+  never shows a dialog.
+- `authorized` → read silently. The user granted access for this.
+- anything else → one log line and return. No prompt, no banner, no retry. The
+  next Phonebook tap prompts, as it always did, and picks the work up.
+- `abPermissionDenied` short-circuits ahead of even the permission check. A
+  refusal already given is final for the launch, and a background repair must
+  never be the thing that goes near the phonebook after the user said no.
+
+`addresBookLoaded` is **not** the flag for "we have a phonebook": it is also
+raised on a denial to stop the retry loop. `_abPhonebookRead`, set only by a
+successful `getABContacts()`, is the one that means what it says. Conflating them
+is what made a denied account take the "already read this launch" branch.
+
+The photo pass's guard now passes if *any* of `avatarPhotos`, `avatarNames` or
+`avatarEmails` is populated, since it carries three things off the phonebook and
+must not be gated on one of them.
+
+### 25.8 Diagnostics: what the startup log will show you
+
+Two dumps, once per account per launch, both after the repairs rather than
+before — the point is the settled state, not a snapshot of something mid-repair.
+
+- `[ab] [kind]` — every server group with its members named, six per line, capped
+  at 60 with `… and N more`. A member the addressbook cannot resolve prints as
+  `<id>` in angle brackets, which is how an orphaned group reference shows up.
+- `[ab] [dump]` — every row of the local `contacts` table: address, name, id,
+  `remote=<local-only>` for a row that has never replicated, the extra URI list,
+  tags, org, email, whether a public key is held. A name that is only an echo is
+  flagged `(echo)`, so the rows still waiting for a real name are visible at a
+  glance instead of looking like they have one.
+
+The `uris` column is a **comma-separated string** (`contact.uris.toString()` on
+write, `String(row.uris).split(',')` on read), not JSON. The first version of the
+dump parsed it as JSON and printed `<unparseable>` for every populated row, which
+said more about the dump than about the data. It now also marks a repeat inside
+the list as `DUPLICATE(...)` — the §16.1 case the heal removes.
+
+Filter on `[ab]` for everything addressbook, `[ab] [lifecycle]` for the
+fetch → apply → writes-enabled timeline, `[ab] [name]` for adoptions and repairs.
+
+---
+
+## 26. Origin stamps: who changed an entry, and when
+
+Every contact and group a client writes carries five attributes naming the device that made
+the change. Sylk mobile, sylk-desktop and Blink desktop implement the same rules and produce
+byte-identical fingerprints:
+
+- **Sylk mobile:** `app/addressbookOrigin.js`. `test_addressbook_origin.cjs` checks it against
+  vectors computed by Blink's code.
+- **sylk-desktop:** `src/app/addressbookOrigin.js`, the same file copied verbatim. Change it
+  here and copy it there.
+- **Blink desktop:** `AddressbookOrigin.py`.
+
+### 26.1 The attributes
+
+| attribute         | value                                                                     |
+|-------------------|---------------------------------------------------------------------------|
+| `modified_by`     | id of the writing device (mobile: `this.deviceId`; Blink: bare instance id; sylk-desktop: a UUID persisted under `addressbookOriginDeviceId`) |
+| `modified_agent`  | the device's user agent, e.g. `Blink Mobile 4.1.0 (Pixel 8 on android)`  |
+| `modified_at`     | UTC, ISO 8601 to the second: `2026-09-16T11:44:07Z`                       |
+| `modified_reason` | why an automatic write happened; empty for a user edit                    |
+| `modified_hash`   | fingerprint of the content at the moment of stamping                      |
+
+All values are strings (Chapter 15). Treat the set of reasons as open. This client writes
+`repair`, `file-into-kind-group`, `create-group`, `reserved-id`, `group-kind`,
+`fold-duplicates`, `group-members`, `name-sync`, `migrate`, `migrate-groups`,
+`migration-marker` and `keys`. sylk-desktop writes `conversation-history`, `message-sender`,
+`name-cache`, `repair`, `file-into-kind-group` and `offline-queue`. Blink writes `repair`,
+`file-into-kind-group`, `ensure-group`, `group-kind`, `call-history`, `backfill` and `block`.
+
+### 26.2 When a write is stamped
+
+- **Content changed:** the write is stamped with this device. For a contact, the content is its
+  name, URIs, presence handling or dialog handling. For a group, it is its name or members.
+- **Content unchanged:** the write carries the server's current stamp unchanged, for example a
+  re-put of the same data or a change to other attributes only. A stale local copy of the bag
+  therefore cannot roll a stamp back.
+- **Applying a fetched document:** nothing is stamped. The writer's stamp is kept.
+
+### 26.3 Fingerprint
+
+1. Build the object below, with keys in sorted order.
+2. Serialise it compactly (`,` and `:` separators, non-ASCII left unescaped).
+3. Take the SHA-1 of the UTF-8 bytes and keep the first 16 hex characters.
+
+**Contact:**
+
+```json
+{"dialog":["<policy>",<subscribe>],
+ "name":"<name>",
+ "presence":["<policy>",<subscribe>],
+ "uris":[["<uri, trimmed>","<type or empty>"], ...]}
+```
+
+Sort `uris` by uri, then by type. A missing handling counts as `["default",false]`. `subscribe`
+is a boolean, and the strings `"true"` and `"1"` count as true.
+
+**Group:**
+
+```json
+{"contacts":["<member id>", ...],"name":"<name>"}
+```
+
+Sort `contacts`. Members sent as full contact objects contribute only their `id`.
+
+Attributes are never part of the fingerprint. The bag holds values that one client registers
+and another does not, so a hash over the attributes would not survive a round trip.
+
+### 26.4 Reading a stamp
+
+The bag is carried through verbatim (Chapter 16.4), so a client that edits an entry without
+stamping it leaves the previous stamp on content that stamp never vouched for. On arrival,
+recompute the fingerprint:
+
+- **Matches `modified_hash`:** the entry was changed by `modified_by` at `modified_at`.
+- **Does not match:** the entry was changed by a client that does not stamp, some time after
+  that stamp.
+- **No stamp at all:** the entry has never been stamped.
+
+A removal carries no stamp, so the device that deleted an entry is unknown.
+
+### 26.5 Implementation here
+
+- **Where writes are stamped.** `_abInstallOriginStamping(ab)` wraps `addContact`,
+  `updateContact`, `addGroup` and `updateGroup` on the addressbook instance when the listeners
+  are bound, so every write path is stamped. Before calling the library it reads the server's
+  copy with `getContact` / `getGroup`, because the library overwrites its cache synchronously.
+  `addGroupMember` / `deleteGroupMember` send no body and are not stamped; nothing uses them.
+- **How the reason is passed.** `_abExecWhy(reason, label, fn, change)` is `_abExec` with the
+  reason set only during the synchronous library call. `_abExec` runs `fn` inside the Promise
+  executor, so the reason cannot leak into another write across an `await`. Without an explicit
+  reason, a write made during the migration gets `migrate` (from `_abCtx`).
+- **What gets logged.** `_abLogOrigins(account)` runs on `dataLoaded` and `dataUpdated`. It
+  compares the addressbook with the snapshot in AsyncStorage (`ab_origin_snapshot.<account>`)
+  and logs:
+
+```
+[ab] [origin] ag@sylk.link: 2 change(s) since the last document
+[ab] [origin]   update contact id207347636fab4309 "Adrian G" (was "+31646630425") -- by Blink 9.8.0 (MacOSX) device 1abd76fb-... at 2026-09-16T11:44:06Z (repair)
+[ab] [origin]   add contact id3 "338318" -- by a client that does not stamp (never stamped)
+```
+
+  The first document ever seen for an account only records a baseline.
+
+---
+
+## 27. sylk-desktop
+
+sylk-desktop (Electron, sylkrtc.js) had no addressbook rules of its own: it indexed contacts by
+the address as stored, created contacts named by their URI, re-added a contact for every
+conversation on every start, and knew nothing of groups, kinds or the other clients. It now
+follows this document. Everything below lives in `src/app/`; the provider is
+`AddressbookProvider.tsx`.
+
+### 27.1 Shared files
+
+| file | shared with | what |
+|------|-------------|------|
+| `addressbookRules.js` | sylk-mobile `app/addressbookRules.js`, verbatim | URI canon, echo names, groups, kinds (Chapter 25.1) |
+| `addressbookOrigin.js` | sylk-mobile `app/addressbookOrigin.js`, verbatim | origin stamps (Chapter 26) |
+| `addressbookNotify.js` | sylk-mobile `app/addressbookNotify.js`, verbatim | `application/sylk-addressbook-update` wire format and throttles |
+
+Change them in sylk-mobile and copy them over. Each has a standalone test in both trees
+(`test_addressbook_rules.cjs`, `test_addressbook_origin.cjs`, `test_addressbook_notify.cjs`).
+`addressbookAccountRules.js` binds the rules to the live config: `config.domain`,
+`config.defaultConferenceDomain`, and `config.pstn.rules` from the server's sylk configuration
+(default `{replacePlus: '00'}`), plus the per-account **Replace 0 with** preference
+(`pstnPreferences.js`, ⋮ menu → Phone numbers), so a national number has the same canonical
+form as on a mobile with the same setting.
+
+### 27.2 One write boundary
+
+`installOriginStamping` wraps `addContact`, `updateContact`, `addGroup`, `updateGroup`,
+`deleteContact` and `deleteGroup` on the addressbook instance. Every write, whichever path
+makes it, is:
+
+1. **built** by `contactPayload.forServer` (contacts only): canonical addresses de-duplicated
+   by value, server URI ids reused, `tel`/`sip` types (other types such as `XMPP` kept), one
+   default in `defaultUri`, dialog/presence and the attributes bag carried from the server
+   copy, client-local fields dropped, names per Chapter 24.2;
+2. **stamped** (Chapter 26), with the reason set by `withAddressbookReason`;
+3. **reported** to the notifier (27.6) once the server answers.
+
+An automatic write never replaces a real server name with an echo; a user's edit may.
+
+### 27.3 Matching by canonical address
+
+The provider's contact index (`contactIndex.js`) keys every contact by `normServerUri` of each
+address it owns, so a lookup in any spelling finds it: `+31618853125@sylk.link` finds
+`+31618853125`, `…@videoconference.X` finds the room at `conference.X`. Several owners of one
+address are ordered lowest id first (16.1); `best(uri)` prefers the one whose default address
+it is.
+
+### 27.4 Contacts created from conversations
+
+Two paths add a contact without the user asking: `updateAddressbook()` on start, for
+conversations without a contact, and an incoming message from an unknown sender.
+`conversationContacts.js` skips `@local`, IP literals, conference anomalies, guests,
+anonymous, the own account, an address a contact already owns in any spelling, an address
+claimed in the last 30 s, and an address whose contact was deleted (27.5). A display name is
+adopted only into a hole (25.5).
+
+### 27.5 Deleted contacts stay deleted
+
+`addressTombstones.js` infers deletes by comparing each authoritative document with the
+addresses seen in the last one (the seen-baseline of Chapter 7, persisted per account). An
+address that disappeared is not re-added from its conversation until it comes back into the
+addressbook or the user adds the contact themselves. The first document is a baseline; an empty
+document after a non-empty one is a failed fetch (Chapter 11) and ignored.
+
+### 27.6 Change notifications
+
+`addressbookNotifier.js` sends `application/sylk-addressbook-update` after writes the server
+confirmed (cleartext, `skipJournal`, `skipDisposition`) and refetches with `Addressbook.refresh()`
+when another device announces one. Ticks are never stored or shown: they are dropped in
+`incomingMessage` (Blink's SIP tick, honoured only from the own account), `outgoingMessage`
+(another device's carbon), `sendingMessage` and the journal replay. sylkrtc.js gained
+`Account.fetchAddressbook(cb)`, `Addressbook.refresh(cb)` and the `skipJournal` /
+`skipDisposition` options on `sendMessage`, as react-native-sylkrtc has.
+
+### 27.7 Remote conversation removes
+
+`conversationRemoves.js` applies Chapter 16.3: another device's remove deletes the
+conversation only when its contact is gone; a live remove that arrives first is parked until the
+addressbook shows the address gone (ten minutes at most, in memory); a journal remove for a live
+contact, or one older than the newest message, is dropped.
+
+### 27.8 Kinded groups and the startup heal
+
+A contact this client creates is filed into Tel or Conference once the server has it
+(`kindGroups.js`: kind → reserved id → name; a missing group is created under its reserved id
+with its kind). Once per account per run, 15 s after the first fetched document and with
+announcements suppressed, `addressbookHeal.js` repairs contacts (canonical addresses,
+duplicate addresses, names per 24.2) and then files every qualifying contact that is not a
+member, one write per group.
+
+### 27.9 The offline queue
+
+An operation made before the addressbook is ready is queued and replayed on the next load.
+Each entry records the server copy's fingerprint at queue time, and `offlineQueue.decide`
+replays it only when that copy is unchanged and the write is not already applied: an update
+of a contact another device edited since, a delete of a contact edited since, or an add of an
+address someone else created is dropped and logged (`[ab] [queue] … not replayed`). Entries
+from older builds carry no fingerprint and are replayed only when no other device has stamped
+the contact.

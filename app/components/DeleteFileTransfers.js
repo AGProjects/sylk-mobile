@@ -296,7 +296,7 @@ class DeleteFileTransfers extends Component {
     const videoFiles = 'videos' in this.props.transferedFiles ? this.props.transferedFiles.videos.length : 0;
     const photoFiles = 'photos' in this.props.transferedFiles ? this.props.transferedFiles.photos.length : 0;
     const otherFiles = 'others' in this.props.transferedFiles ? this.props.transferedFiles.others.length : 0;
-    const canDeleteRemote = this.props.uri && !this.props.uri.includes('@videoconference') && this.state.outgoing;
+    const canDeleteRemote = this.props.uri && !utils.isConferenceUri(this.props.uri) && this.state.outgoing;
     const isDisabled = allIds.length === 0;
 
     const photoSize = this.props.transferedFilesSizes?.photos ?? 0;

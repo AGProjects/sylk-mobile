@@ -625,7 +625,7 @@ class LocalMedia extends Component {
 
     render() {
         let displayName = this.props.remoteDisplayName;
-        if (this.props.remoteUri.indexOf('@videoconference') > -1) {
+        if (utils.isConferenceUri(this.props.remoteUri)) {
 			const room = this.props.remoteUri.split('@')[0];
 			displayName = 'Room ' + room;
         }

@@ -1,0 +1,178 @@
+diff --git a/node_modules/react-native-sylkrtc/lib/account.js b/node_modules/react-native-sylkrtc/lib/account.js
+index 909658a..dc9da86 100644
+--- a/node_modules/react-native-sylkrtc/lib/account.js
++++ b/node_modules/react-native-sylkrtc/lib/account.js
+@@ -456,17 +456,35 @@ class Account extends EventEmitter {
+         }
+     }
+ 
+-    _fetchAddressbook() {
++    // Public, UNGUARDED refetch. _fetchAddressbook() below runs once per
++    // registration (it is gated on _addressbookFetched); this one is for a
++    // caller that has been told the server addressbook changed and wants the
++    // new snapshot now -- see application/sylk-addressbook-update.
++    fetchAddressbook(cb = null) {
++        this._fetchAddressbook(cb);
++    }
++
++    _fetchAddressbook(cb = null) {
+         const req = {
+             sylkrtc: 'account-fetch-addressbook',
+             account: this._id
+         };
++        // Contact avatars: the pictures the app has cached, so the server
++        // sends picture data only where it changed. Without a cache set on
++        // the addressbook nothing is sent and no avatars come back.
++        const avatars = this._connection._addressbook._avatarEtags();
++        if (avatars) {
++            req.avatars = avatars;
++        }
+         this._sendRequest(req, (error) => {
+             if (error) {
+                 DEBUG('Addressbook fetch error: %s', error);
+             } else {
+                 this._addressbookFetched = true;
+             }
++            if (cb) {
++                cb(error);
++            }
+         });
+     }
+ 
+diff --git a/node_modules/react-native-sylkrtc/lib/addressbook.js b/node_modules/react-native-sylkrtc/lib/addressbook.js
+index 9096b53..6db1c72 100644
+--- a/node_modules/react-native-sylkrtc/lib/addressbook.js
++++ b/node_modules/react-native-sylkrtc/lib/addressbook.js
+@@ -13,6 +13,21 @@ class Addressbook extends EventEmitter {
+         this._contacts = new Map();
+         this._groups = new Map();
+         this._policies = new Map();
++        this._avatarCache = null;
++    }
++
++    // Contact avatars (SylkServer account storage, carried on the contacts).
++    // `fn` returns [{id, etag}] of the pictures the app has cached; once set,
++    // every fetch asks for avatars and the server sends picture data only
++    // where the etag differs. Contacts then carry `avatar` = {etag,
++    // content_type, size, modified, device_id}; the picture data is taken out
++    // of them and handed over once in an 'avatars' event, emitted before
++    // dataLoaded / dataUpdated: [{id, avatar, data}].
++    // To set or remove a picture, send it on the contact:
++    //   updateContact({...contact, avatar: {data, content_type, device_id}})
++    //   updateContact({...contact, avatar: {remove: true, device_id}})
++    setAvatarCache(fn) {
++        this._avatarCache = typeof fn === 'function' ? fn : null;
+     }
+ 
+     get contacts() {
+@@ -37,7 +52,7 @@ class Addressbook extends EventEmitter {
+             if (cb) cb(new Error('No contact provided'));
+             return;
+         }
+-        this._contacts.set(contact.id, contact);
++        this._contacts.set(contact.id, this._keepAvatar(this._withoutAvatarData(contact)));
+         this._applyToAllAccounts('add', 'contact', contact, cb);
+     }
+ 
+@@ -46,7 +61,7 @@ class Addressbook extends EventEmitter {
+             if (cb) cb(new Error('No contact provided'));
+             return;
+         }
+-        this._contacts.set(contact.id, contact);
++        this._contacts.set(contact.id, this._keepAvatar(this._withoutAvatarData(contact)));
+         this._applyToAllAccounts('update', 'contact', contact, cb);
+     }
+ 
+@@ -145,8 +160,74 @@ class Addressbook extends EventEmitter {
+         this.emit('dataCacheLoaded');
+     }
+ 
++    // Ask the server for a fresh snapshot on every account. The reply comes
++    // back as 'addressbook-fetched' and lands in _load(), so listeners see the
++    // ordinary 'dataLoaded' -- there is no separate "refreshed" event to
++    // handle. Used by the application/sylk-addressbook-update receiver.
++    refresh(cb = null) {
++        if (!this._connection || this._connection.state !== 'ready') {
++            if (cb) cb(new Error('Connection is not ready'));
++            return;
++        }
++        for (const [, account] of this._connection._accounts) {
++            account.fetchAddressbook(cb);
++        }
++    }
++
+ 
+     // Private API
++    _avatarEtags() {
++        if (!this._avatarCache) {
++            return null;
++        }
++        try {
++            const list = this._avatarCache();
++            return Array.isArray(list) ? list.filter((a) => a && a.id && a.etag) : [];
++        } catch (e) {
++            return [];
++        }
++    }
++
++    // A contact as cached here: avatar metadata only, never the picture or
++    // the remove instruction of an update.
++    _withoutAvatarData(contact) {
++        if (!contact || !contact.avatar) {
++            return contact;
++        }
++        const avatar = Object.assign({}, contact.avatar);
++        delete avatar.data;
++        delete avatar.remove;
++        return Object.assign({}, contact, {avatar: avatar.etag || avatar.code ? avatar : null});
++    }
++
++    // A contact written or echoed without `avatar` says nothing about its
++    // picture (the avatar is not part of the XCAP document): keep what the
++    // last fetch said. A fetch replaces everything.
++    _keepAvatar(contact) {
++        if (contact && (contact.avatar === undefined || contact.avatar === null)) {
++            const previous = this._contacts.get(contact.id);
++            if (previous && previous.avatar && previous.avatar.etag) {
++                return Object.assign({}, contact, {avatar: previous.avatar});
++            }
++        }
++        return contact;
++    }
++
++    // Take the picture data out of server contacts; emit it once.
++    _takeAvatars(contacts) {
++        const out = [];
++        for (const contact of contacts) {
++            if (contact && contact.avatar && (contact.avatar.data || contact.avatar.code)) {
++                out.push({id: contact.id, avatar: Object.assign({}, contact.avatar, {data: undefined}),
++                          data: contact.avatar.data || null});
++                delete contact.avatar.data;
++            }
++        }
++        if (out.length) {
++            this.emit('avatars', out);
++        }
++    }
++
+     _serialize(data) {
+         return JSON.parse(JSON.stringify(data));
+     }
+@@ -159,6 +240,7 @@ class Addressbook extends EventEmitter {
+         this._contacts.clear();
+         this._policies.clear();
+         this._groups.clear();
++        this._takeAvatars(addressbookData.contacts || []);
+         for (const contact of addressbookData.contacts) {
+             this._contacts.set(contact.id, contact);
+         }
+@@ -193,7 +275,8 @@ class Addressbook extends EventEmitter {
+             if (addressbookData.type && addressbookData[addressbookData.type]) {
+                 switch (addressbookData.type) {
+                     case 'contact':
+-                        this._contacts.set(addressbookData.contact.id, addressbookData.contact);
++                        this._takeAvatars([addressbookData.contact]);
++                        this._contacts.set(addressbookData.contact.id, this._keepAvatar(addressbookData.contact));
+                         break;
+                     case 'policy':
+                         this._policies.set(addressbookData.policy.id, addressbookData.policy);

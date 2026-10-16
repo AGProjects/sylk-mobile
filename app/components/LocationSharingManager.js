@@ -5090,9 +5090,22 @@ export default class LocationSharingManager {
             return;
         }
         if (kind === 'once') {
-            // shareLocationOnce awaits its own getCurrentCoordinates() + send
-            // internally, so its completion IS the feedback signal.
-            await this.shareLocationOnce(uri, {originOverride: _manualOrigin});
+            // shareLocationOnce awaits its own fix + send internally, so its
+            // completion IS the feedback signal.
+            //
+            // Hand it the picker's preview fix when that fix is still fresh —
+            // the same reuse startLocationSharing already does for live
+            // shares. The modal held Share disabled until this fix landed, so
+            // by the time the user taps it we have a fix they have seen and
+            // approved; acquiring again here would make them wait out a
+            // second GPS cold start for the same position. _freshPreviewFix()
+            // returns null once it ages out (60 s) or when there is no picker
+            // behind the call (e.g. answering a peer's location_request),
+            // which falls back to the live acquire.
+            await this.shareLocationOnce(uri, {
+                originOverride: _manualOrigin,
+                previewFix: _manualOrigin ? null : this._freshPreviewFix(),
+            });
             return;
         }
         await this.startLocationSharing(uri, durationMs, periodLabel, {
@@ -5172,15 +5185,36 @@ export default class LocationSharingManager {
             );
             return;
         }
+        // opts.originOverride — the user dragged the picker's crosshair off a
+        // visibly wrong GPS fix. Use their point and skip the acquire
+        // entirely: re-reading GPS here would just hand back the same bad fix
+        // they had just finished correcting.
+        //
+        // opts.previewFix — the share picker's own fix, still fresh (see
+        // _freshPreviewFix / onShareLocationConfirmed). The modal acquires GPS
+        // when it opens, keeps Share disabled until that fix lands, and shows
+        // it on the preview map; acquiring a SECOND time on Confirm makes the
+        // user pay the 5–15 s cold-start latency twice for a fix they have
+        // already seen and approved. Reuse it, exactly as the live-share path
+        // does. A hand-corrected origin outranks it, and a missing / aged-out
+        // preview falls through to a live acquire below.
+        const _override = (opts && opts.originOverride) || null;
+        const _previewFix = (!_override
+                && opts && opts.previewFix
+                && typeof opts.previewFix.latitude === 'number'
+                && typeof opts.previewFix.longitude === 'number')
+            ? opts.previewFix
+            : null;
         // Memory-only "we're working on it" note. GPS cold-start can
         // take 5–15 s, and without any visible feedback the user
         // wonders whether the tap registered. Use renderSystemMessage
         // (no SQL INSERT, no replication) so the note disappears on
         // the next chat reload and doesn't clutter restored history.
-        // Skip the "acquiring…" note when the user hand-placed the pin:
-        // there is nothing to acquire, the bubble lands immediately, and
-        // the note would claim a GPS read that never happens.
-        if (!(opts && opts.originOverride)) {
+        // Skip the "acquiring…" note when the user hand-placed the pin or
+        // when we are reusing the picker's fix: there is nothing to acquire,
+        // the bubble lands immediately, and the note would claim a GPS read
+        // that never happens.
+        if (!_override && !_previewFix) {
             try {
                 this.app.renderSystemMessage(
                     uri,
@@ -5192,29 +5226,31 @@ export default class LocationSharingManager {
             } catch (e) { /* noop */ }
         }
         try {
-            // opts.originOverride — the user dragged the picker's crosshair
-            // off a visibly wrong GPS fix. Use their point and skip the
-            // acquire entirely: re-reading GPS here would just hand back
-            // the same bad fix they had just finished correcting.
-            //
-            // `accuracy` is deliberately NOT carried over from the fix. It
-            // described the GPS reading, not this point, and shipping it
-            // would tell the receiver we have a ±8 m measurement of a
-            // location that was actually placed by hand. Omitting it is the
-            // existing "accuracy unknown" case, which every consumer
-            // already handles, rather than a new field older clients would
-            // have to learn.
-            const _override = opts && opts.originOverride;
+            // On a hand-placed pin, `accuracy` is deliberately NOT carried
+            // over from the fix. It described the GPS reading, not this
+            // point, and shipping it would tell the receiver we have a ±8 m
+            // measurement of a location that was actually placed by hand.
+            // Omitting it is the existing "accuracy unknown" case, which
+            // every consumer already handles, rather than a new field older
+            // clients would have to learn. The reused preview fix is a real
+            // GPS reading, so it DOES keep its own accuracy.
             const coords = _override
                 ? {
                     latitude: _override.latitude,
                     longitude: _override.longitude,
                     timestamp: Date.now(),
                 }
-                : await this.getCurrentCoordinates();
+                : (_previewFix || await this.getCurrentCoordinates());
             if (_override) {
                 utils.timestampedLog('[location] one-shot: using hand-adjusted origin for', uri,
                     '—', coords.latitude.toFixed(6) + ',' + coords.longitude.toFixed(6));
+            }
+            if (_previewFix) {
+                utils.timestampedLog('[location] one-shot: reusing fresh preview location for', uri,
+                    '—', coords.latitude.toFixed(6) + ',' + coords.longitude.toFixed(6),
+                    '(age', (typeof _previewFix.timestamp === 'number'
+                        ? Math.round((Date.now() - _previewFix.timestamp) / 1000) + 's'
+                        : 'n/a'), ')');
             }
             // 24 h expires_at is generous — a one-shot location is
             // useful for a long time after it's sent (you might be

@@ -40,7 +40,7 @@ import ContactSelectFab from './ContactSelectFab';
 import SearchBar from './SearchBar';
 import { DTMFPad } from './DTMFModal';
 import {
-    isVideoConferenceUri,
+    isConferenceUri,
     isAnonymousUri,
     canReceiveVoiceMemo,
     canShareLocationWith,
@@ -918,7 +918,7 @@ class ReadyBox extends Component {
     }
 
     chatDisabledForUri(uri) {
-        if (isVideoConferenceUri(uri)) {
+        if (isConferenceUri(uri)) {
             return true;
         }
 
@@ -1154,7 +1154,7 @@ class ReadyBox extends Component {
     // Visibility gate for the chat-header "Share location" button.
     //
     // Mirrors `showAudioRecordButton`'s shape (not in a call, selected
-    // contact is a real 1:1 peer — not a videoconference room, not an
+    // contact is a real 1:1 peer — not a conference room, not an
     // anonymous @guest, not a phone number), and adds the PGP gate that
     // NavigationBar already enforces on the kebab menu item: without the
     // contact's public key we can't encrypt the live-location payload, so
@@ -1802,7 +1802,7 @@ class ReadyBox extends Component {
 
         let uri = this.state.targetUri.toLowerCase();
 
-        if (uri.indexOf('@videoconference.') > -1) {
+        if (utils.isConferenceUri(uri, this.props.defaultConferenceDomain)) {
             // Saved invitees are stored on the contact's
             // `participants` array (persisted via app.js
             // saveConference) and re-hydrated into the in-memory
@@ -1863,7 +1863,7 @@ class ReadyBox extends Component {
             }
         }
 
-        if (uri.indexOf('@videoconference.') > -1) {
+        if (utils.isConferenceUri(uri, this.props.defaultConferenceDomain)) {
             // Audio/Video buttons join the room WITHOUT auto-
             // inviting saved participants. The user wants the
             // quick-start buttons to put just themselves in the
@@ -1901,7 +1901,7 @@ class ReadyBox extends Component {
             }
         }
 
-        if (uri.indexOf('@videoconference.') > -1) {
+        if (utils.isConferenceUri(uri, this.props.defaultConferenceDomain)) {
             // Quick-start Video button — same rule as the Audio
             // button: join with just the local user, no auto-
             // invites of saved participants. The user invokes
@@ -2046,7 +2046,7 @@ class ReadyBox extends Component {
         // Route through utils.isPhoneNumber with the account's
         // configured conference-bridge domain so that conference rooms
         // whose names start with a leading 0 (e.g. `089577@<your-
-        // videoconference-domain>`) are NOT treated as PSTN numbers
+        // conference-domain>`) are NOT treated as PSTN numbers
         // here. The previous inline regex looked only at the local
         // part, which mis-classified those rooms as phone numbers
         // and disabled the Video Call button — making it impossible
@@ -2097,7 +2097,7 @@ class ReadyBox extends Component {
             return true;
         }
 
-        if (uri.indexOf('@videoconference.') > -1) {
+        if (utils.isConferenceUri(uri, this.props.defaultConferenceDomain)) {
             return true;
         }
 
@@ -2620,12 +2620,12 @@ class ReadyBox extends Component {
             // the badge matches what the view actually shows.
             //   recent → the 7 most recently-active contacts (capped at 7)
             //   calls  → has a last_call_timestamp, excluding conference rooms
-            //            (videoconference URIs are dropped from the Calls view)
+            //            (conference URIs are dropped from the Calls view)
             case 'recent':
                 return Math.min(7, all.filter(c => c && c.timestamp).length);
             case 'calls':      return all.filter(c => c
                                    && c.lastCallTimestamp != null
-                                   && (c.uri || '').indexOf('@videoconference.') === -1).length;
+                                   && !utils.isConferenceUri(c.uri || '', this.props.defaultConferenceDomain)).length;
             default:           return tagged(key); // custom group tag (e.g. Business)
         }
     };
@@ -3444,8 +3444,7 @@ class ReadyBox extends Component {
 		);
 
         // The legacy `fileTransfersDisabled` flag — true for contacts
-        // tagged `test`, for `@videoconference` URIs, and for
-        // `@conference` URIs — used to greying-out the mic button in
+        // tagged `test` and for conference URIs — used to greying-out the mic button in
         // the call-buttons row. Those four cases are now handled
         // inside showAudioRecordButton (which HIDES the button for
         // each of them) so the disabled-but-visible state is gone.

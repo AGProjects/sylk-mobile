@@ -7,7 +7,7 @@ import momentFormat from 'moment-duration-format';
 import { Card, Text, Badge } from 'react-native-paper';
 import Icon from '@react-native-vector-icons/material-design-icons';
 import uuid from 'react-native-uuid';
-import UserIcon from './UserIcon';
+import UserIcon, { AvatarOrGravatar } from './UserIcon';
 import { Gravatar } from '../gravatar';
 import { GiftedChat } from 'react-native-gifted-chat';
 
@@ -46,10 +46,18 @@ const styles = StyleSheet.create({
     borderRadius: 0,
   },
 
+  // This row -- not the Card -- owns the tile's height, and centres the three
+  // columns in it. Paper's Card puts its children in an innerContainer styled
+  // {flexShrink: 1}: no flexGrow, so that wrapper is only as tall as its
+  // content and a flex:1 here had nothing to fill. The Card's minHeight then
+  // left its slack BELOW the content, which is why the tile read as top-
+  // aligned and why every column previously needed a hand-picked marginTop to
+  // fake the centre. minHeight moves here (applied inline from cardHeight, so
+  // it still tracks fontScale) and alignItems does the centring for real.
   rowContent: {
-    flex: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
   },
 
   cardContent: {
@@ -57,16 +65,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
 
+  // NO flex here. mainContent is a default flex COLUMN, so flex:1 on the title
+  // governs the VERTICAL axis: the title box swallows the card's leftover
+  // height and pushes the subtitle row to the bottom of the tile. The gap
+  // between the two lines then depends on how tall the row happens to be,
+  // which varies with the other columns -- a contact with an initials avatar
+  // and a dialpad icon spaces differently from one with a photo and a storage
+  // size, on the same screen, for no reason the user can see.
+  //
+  // The flex:1 on `subtitle` is a different thing and stays: that Text lives
+  // inside subtitleRow, a flex ROW, where flex governs WIDTH and is what keeps
+  // the second line from collapsing to min-content (see the mainContent note).
+  // Width here needs nothing: a column stretches its children by default.
   title: {
     fontSize: 16,
     lineHeight: 18,
-    flex: 1,
   },
 
+  // All zero on purpose. These used to nudge the title down by a
+  // hand-picked number of pixels per fontScale bucket, which is a guess at
+  // where the vertical middle of the row is -- and the guess was wrong in
+  // both directions in turn (title pinned to the top of the tile, then the
+  // pair of lines riding above the avatar's centre). The row now CENTRES its
+  // three columns instead (avatarContent / mainContent / rightContent all
+  // alignSelf or justifyContent 'center'), so the correct offset falls out of
+  // the layout at any font scale and no padding is needed. Kept as no-ops so
+  // the fontScale branch below still resolves.
   titlePaddingSmall: { paddingTop: 0 },
-  titlePadding: { paddingTop: 12 },
-  titlePaddingSelect: { paddingTop: 25 },
-  titlePaddingBig: { paddingTop: 14 },
+  titlePadding: { paddingTop: 0 },
+  titlePaddingSelect: { paddingTop: 0 },
+  titlePaddingBig: { paddingTop: 0 },
 
   subtitle: {
     paddingTop: 4,
@@ -80,7 +108,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  avatarContent: { marginTop: 10 },
+  // Centred on the row's cross (vertical) axis rather than pushed down by a
+  // fixed margin: the avatar is the tallest column, so a top margin made it
+  // define a row taller than itself with all the slack at the bottom, and
+  // every other column then had to be nudged by hand to look level with it.
+  avatarContent: { alignSelf: 'center' },
 
   gravatar: {
     width: 50,
@@ -104,19 +136,23 @@ const styles = StyleSheet.create({
   // flex ROW, added with the incoming-location pin) collapsed to min-content —
   // clipping the 2nd line after ~10 characters. With a bounded width the Text
   // fills the real available space and ellipsizes at the true edge.
-  mainContent: { marginLeft: 10, flex: 1 },
+  //
+  // justifyContent centres the title/subtitle PAIR as a block on the vertical
+  // axis. That is the thing the eye reads as level with the avatar -- not the
+  // title alone, and not the two lines pushed to opposite ends of the tile.
+  mainContent: { marginLeft: 10, flex: 1, justifyContent: 'center' },
 
   rightContent: {
-    marginTop: 10,
+    alignSelf: 'center',
     marginLeft: 60,
     marginRight: 10,
     flexDirection: 'column',
     alignItems: 'flex-end',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
   },
 
   selectBox: {
-    marginTop: 10,
+    alignSelf: 'center',
     marginLeft: 50,
     marginRight: 30,
     alignItems: 'flex-end',
@@ -354,7 +390,7 @@ class ContactCard extends Component {
 	  // strip cleanly. Email/SIP user URIs keep their full form.
 	  //
 	  // Conference URIs (rooms hosted on the account's configured
-	  // conference bridge, e.g. someroom@videoconference.sip2sip.info)
+	  // conference bridge, e.g. someroom@conference.sip2sip.info)
 	  // are NEVER telephone contacts, even when the room name starts
 	  // with a leading 0 and may legitimately have been tagged 'tel'
 	  // by an older build that ran isPhoneNumber on the bare local
@@ -378,7 +414,7 @@ class ContactCard extends Component {
 		title = 'Anonymous caller';
 	  }
 	
-	  if (uri.indexOf('@videoconference.') > -1) {
+	  if (_isConferenceUri || utils.isConferenceUri(uri)) {
 		// Conference rooms with a saved display name (set in
 		// EditConferenceModal → app.js saveConference → contacts.name
 		// column) should show that name as the row title, not the
@@ -511,21 +547,11 @@ class ContactCard extends Component {
 				if (this.props.onLongPress) this.props.onLongPress();
 			  }}
 			>
-			  <View style={styles.rowContent}>
+			  <View style={[styles.rowContent, { minHeight: cardHeight }]}>
 				<Card.Content style={styles.cardContent}>
 				  <View style={styles.avatarContent}>
-					{contact.photo || !contact.email ? (
-					  <UserIcon size={50} identity={contact} unread={unread} />
-					) : (
-					  <Gravatar
-						options={{
-						  email: contact.email,
-						  parameters: { size: '50', d: 'mm' },
-						  secure: true,
-						}}
-						style={styles.gravatar}
-					  />
-					)}
+					<AvatarOrGravatar size={50} identity={contact} unread={unread}
+					  gravatarSize="50" gravatarStyle={styles.gravatar} />
 					{/* Bottom-left source badge on the avatar:
 					    • "New" — the synthetic typed-address row that matches no
 					      saved contact (searchNew set in searchedContact).

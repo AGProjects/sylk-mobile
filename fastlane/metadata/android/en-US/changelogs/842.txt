@@ -1,0 +1,2 @@
+Contact management fixes
+Fix render icons on some Android OEM versions

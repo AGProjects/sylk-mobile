@@ -600,7 +600,71 @@ class Call extends Component {
     // `s=-`, and plain browser WebRTC offers usually do exactly that. We
     // treat '-', empty, and Janus's own placeholder as "no name" so we
     // never show a meaningless string.
+    // Every capture of the peer's client identity also lands on the call
+    // object, where app.js reads it for the call detail record when the call
+    // ends -- by then this component may be gone.
     _extractRemoteUserAgent(call) {
+        const ua = this._extractRemoteUserAgentRaw(call);
+        if (ua && call) {
+            call._cdrRemoteUserAgent = ua;
+        }
+        return ua;
+    }
+
+    // The codec each m-line settled on, from the ANSWER: its first payload
+    // type is the one both ends send. Stamped on the call object for the
+    // call detail record (local.codecs, blink docs/CALL-DETAIL-RECORD.md
+    // section 4.3). Raw SDP encoding names ('opus', 'H264'); sampleRate for
+    // audio only -- video RTP is 90 kHz for every codec.
+    _recordNegotiatedCodecs(call) {
+        try {
+            const pc = call && call._pc;
+            if (!pc) {
+                return;
+            }
+            const answer = [pc.remoteDescription, pc.localDescription]
+                .find(d => d && d.type === 'answer' && d.sdp);
+            if (!answer) {
+                return;
+            }
+            const codecs = {};
+            let kind = null;
+            let firstPt = null;
+            for (const line of answer.sdp.split(/\r?\n/)) {
+                const m = /^m=(audio|video) (\d+) \S+ ?(\S*)/.exec(line);
+                if (m) {
+                    // A rejected m-line (port 0) negotiated nothing.
+                    kind = (m[2] !== '0' && !codecs[m[1]]) ? m[1] : null;
+                    firstPt = m[3] || null;
+                    continue;
+                }
+                if (line.startsWith('m=')) {
+                    kind = null;
+                    continue;
+                }
+                const r = kind && /^a=rtpmap:(\d+) ([^/\s]+)\/(\d+)/.exec(line);
+                if (r && r[1] === firstPt) {
+                    const entry = {name: r[2]};
+                    if (kind === 'audio') {
+                        // The rtpmap clock, with RFC 3551's one lie undone:
+                        // G.722 signals 8000 but samples at 16 kHz, which is
+                        // what Blink records for it.
+                        entry.sampleRate = r[2].toUpperCase() === 'G722'
+                            ? 16000 : parseInt(r[3], 10);
+                    }
+                    codecs[kind] = entry;
+                    kind = null;
+                }
+            }
+            if (Object.keys(codecs).length) {
+                call._cdrCodecs = Object.assign({}, call._cdrCodecs || {}, codecs);
+            }
+        } catch (e) {
+            utils.timestampedLog('[cdr] cannot read negotiated codecs:', e && e.message);
+        }
+    }
+
+    _extractRemoteUserAgentRaw(call) {
         if (!call) {
             return null;
         }
@@ -1230,6 +1294,7 @@ class Call extends Component {
             // could trip during normal ICE/DTLS settling.
             this._startMediaLossPoller();
             const currentCall = this.state.call;
+            this._recordNegotiatedCodecs(currentCall);
 
             // Tell the peer what this build can do (screen sharing,
             // the screen-request handshake, remote pointer, conference
@@ -1665,6 +1730,7 @@ class Call extends Component {
 
     onMediaUpdated(payload) {
         utils.timestampedLog('[upgrade] mediaUpdated:', JSON.stringify(payload));
+        this._recordNegotiatedCodecs(this.state.call);
         this._cancelUpgradePromptTimer();
         const nowAudioOnly = !payload || (!payload.hasLocalVideo && !payload.hasRemoteVideo);
         if (this.state.audioOnly !== nowAudioOnly) {
@@ -2318,7 +2384,7 @@ Call.propTypes = {
 	// which otherwise flashes a misleading "audio call without video"
 	// view for ~200 ms before LocalMedia takes over.
 	outgoingMediaIsVideo    : PropTypes.bool,
-	// Default sylk conference domain (e.g. videoconference.sip2sip.info)
+	// Default sylk conference domain (e.g. conference.sip2sip.info)
 	// forwarded to AudioCallBox so it can compose the room URI sent in
 	// conference_request metadata on escalation.
 	defaultConferenceDomain : PropTypes.string

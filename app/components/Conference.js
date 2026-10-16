@@ -553,7 +553,7 @@ class Conference extends React.Component {
 
         // `myInvitedParties` is keyed by the room's LOCAL part — see
         // app.js ~2891. `this.state.room` here is the lowercased FULL
-        // targetUri ("name@videoconference.domain"), so previously
+        // targetUri ("name@conference.domain"), so previously
         // this hasOwnProperty check ALWAYS failed and the in-session
         // participant list silently overwrote the saved invitees.
         //

@@ -1,0 +1,4 @@
+ * Default conference domain to conference.sip2sip.info
+ * Added avatar sync with server
+ * Implemented bulk delete handling from other devices
+ * Never re-create or replicate deleted contacts

@@ -1110,7 +1110,7 @@ class ContactsListBox extends Component {
                         elem.name = elem.uri;
                     }
 
-                    if (elem.remoteParty.indexOf('@videoconference.') > -1) {
+                    if (utils.isConferenceUri(elem.remoteParty)) {
                         elem.conference = true;
                         elem.media = ['audio', 'video', 'chat'];
                     }
@@ -1621,7 +1621,7 @@ class ContactsListBox extends Component {
                 return;
             }
 
-            if (this.state.shareToContacts && elem.uri.indexOf('videoconference') > -1) {
+            if (this.state.shareToContacts && utils.isConferenceUri(elem.uri)) {
                 return;
             }
 
@@ -1651,7 +1651,7 @@ class ContactsListBox extends Component {
             item.showActions = false;
             //console.log('item', item.uri, item.tags);
 
-            if (item.uri.indexOf('@videoconference.') === -1) {
+            if (!utils.isConferenceUri(item.uri)) {
                 item.conference = false;
             } else {
                 item.conference = true;
@@ -1704,7 +1704,7 @@ class ContactsListBox extends Component {
                 }
             }
 
-            if (this.state.inviteContacts && item.uri.indexOf('@videoconference.') > -1) {
+            if (this.state.inviteContacts && utils.isConferenceUri(item.uri)) {
                 return;
             }
 
@@ -1739,7 +1739,7 @@ class ContactsListBox extends Component {
                 }
             }
 
-            if (item.uri.indexOf('@videoconference.') > -1 && this.state.filter == 'calls') {
+            if (utils.isConferenceUri(item.uri) && this.state.filter == 'calls') {
                 return;
             }
 
@@ -1755,8 +1755,20 @@ class ContactsListBox extends Component {
             // activity" signal. This is a STRICT filter: rows without
             // a last_call_timestamp are dropped from the Calls view
             // (no fallthrough to the not-blocked branch).
+            //
+            // ...with one addition: membership of the SHARED Calls group.
+            // Since the group is replicated through XCAP and Blink desktop
+            // fills it from its own call history, a contact can be a genuine
+            // member of the call log without this handset ever having placed
+            // or received the call -- it has the 'calls' tag (adopted from the
+            // server group) and no local last_call_timestamp. Requiring the
+            // timestamp drops exactly those rows, so the shared group would
+            // look like it did nothing on mobile. Accept either signal; the
+            // sort below keeps the local-activity rows on top.
             if (this.state.filter === 'calls') {
-                if (item.lastCallTimestamp != null) {
+                const _hasCallTs = item.lastCallTimestamp != null;
+                const _inCallsGroup = Array.isArray(item.tags) && item.tags.indexOf('calls') > -1;
+                if (_hasCallTs || _inCallsGroup) {
                     filteredItems.push(item);
                 }
             } else if (this.state.filter && item.tags.indexOf(this.state.filter) > -1) {
@@ -1783,10 +1795,16 @@ class ContactsListBox extends Component {
                 const src = this.state.allContacts || [];
                 const withTs = src.filter(c => c && c.lastCallTimestamp != null);
                 const withTag = src.filter(c => c && Array.isArray(c.tags) && c.tags.indexOf('calls') > -1);
-                const confWithTs = withTs.filter(c => (c.uri || '').indexOf('@videoconference.') > -1);
+                const confWithTs = withTs.filter(c => utils.isConferenceUri(c.uri || ''));
+                // groupOnly: rows that are in the shared Calls group but have
+                // no local call time -- the ones the strict filter used to drop.
+                // If this is non-zero and shown < withLastCallTs + groupOnly,
+                // something downstream is still discarding them.
+                const groupOnly = withTag.filter(c => c && c.lastCallTimestamp == null);
                 console.log('[calls-diag] source=' + src.length
                     + ' withLastCallTs=' + withTs.length
                     + ' withCallsTag=' + withTag.length
+                    + ' groupOnly=' + groupOnly.length
                     + ' confWithTs=' + confWithTs.length
                     + ' shown=' + filteredItems.length
                     + ' targetUri=' + (this.state.targetUri || '(none)'));
@@ -1883,17 +1901,34 @@ class ContactsListBox extends Component {
             }
         } else {
             const sortOrder = this.state.sortOrder;
-        
+
+            // Which clock this view is ordered by. The Calls category is a call
+            // log, so it orders by call activity: sorting it by
+            // contact.timestamp means a CHAT with somebody reorders the call
+            // list, and a call reorders the message list. Blink desktop keeps
+            // the two apart for the same reason (lastCallTimeForContact vs
+            // lastMessageTimeForContact) -- "a message must not reorder the
+            // Calls group and a call must not reorder Messages".
+            //
+            // Rows with no clock at all -- a contact adopted from the shared
+            // Calls group that this handset has never called -- fall to case 3
+            // and sort alphabetically underneath, instead of interleaving.
+            const _sortKey = (c) => (this.state.filter === 'calls'
+                ? (c && c.lastCallTimestamp)
+                : (c && c.timestamp));
+
 			items.sort(function(a, b) {
-			  var aHasTimestamp = !!a.timestamp;
-			  var bHasTimestamp = !!b.timestamp;
+			  var aTs = _sortKey(a);
+			  var bTs = _sortKey(b);
+			  var aHasTimestamp = !!aTs;
+			  var bHasTimestamp = !!bTs;
 			
 			  // Case 1: both have timestamps -> newest first
 			  if (aHasTimestamp && bHasTimestamp) {
 				if (sortOrder == 'desc') {
-					return new Date(b.timestamp) - new Date(a.timestamp);
+					return new Date(bTs) - new Date(aTs);
 				} else {
-					return new Date(a.timestamp) - new Date(b.timestamp);
+					return new Date(aTs) - new Date(bTs);
 				}
 			  }
 			

@@ -82,6 +82,8 @@ export default function ThumbnailGrid({
   // "No images" so existing image-grid call sites keep their
   // wording; the video grid passes "No videos".
   emptyText = 'No images',
+  // When set, logs layout / tile size / item counts under [gridUI].
+  debugTag = null,
   // When true, skip the optimistic in-grid removal on the Delete
   // action-bar button — leave the caller to drive the actual
   // delete (e.g. open a confirmation modal first). Default false
@@ -142,6 +144,7 @@ export default function ThumbnailGrid({
   }) {
 
     const [containerWidth, setContainerWidth] = useState(0);
+    const _gridDiagSigRef = useRef(null);
 	const SCREEN_WIDTH = isLandscape ? windowDims.height : windowDims.width;
 	const SCREEN_HEIGHT = isLandscape ? windowDims.width : windowDims.height;
 
@@ -773,6 +776,24 @@ const renderItem = useCallback(
   [size, imageStyle, openViewer, onLongPress, selected, toggleSelect, selectMode, onItemPress, tapAlwaysOpens, onGoToDay, showStateBadge, checkboxCorner],
 );
 
+  if (debugTag) {
+    const _sig = [images ? images.length : 0, visibleImages.length,
+      displayData.length, containerWidth, size, numColumns].join('|');
+    if (_sig !== _gridDiagSigRef.current) {
+      _gridDiagSigRef.current = _sig;
+      console.log('[gridUI]', debugTag,
+        'images=' + (images ? images.length : 0),
+        'visible=' + visibleImages.length,
+        'rendered=' + displayData.length,
+        'containerWidth=' + containerWidth,
+        'tile=' + size + 'px',
+        'cols=' + numColumns,
+        (!images || images.length === 0) ? '-> EMPTY placeholder'
+          : (size <= 0 ? '-> tiles have ZERO size (no layout width yet)'
+          : (displayData.length === 0 ? '-> FlatList data EMPTY (visibleImages not synced)' : '-> grid')));
+    }
+  }
+
   if (!images || images.length === 0) {
     return placeholderComponent ? (
       placeholderComponent
@@ -822,6 +843,10 @@ return (
     style={[styles.container, containerStyle]}
     onLayout={(e) => {
       const w = e.nativeEvent.layout.width;
+      if (debugTag) {
+        console.log('[gridUI]', debugTag, 'container layout',
+          Math.round(w) + 'x' + Math.round(e.nativeEvent.layout.height));
+      }
       if (w !== containerWidth) {
         setContainerWidth(w);
       }

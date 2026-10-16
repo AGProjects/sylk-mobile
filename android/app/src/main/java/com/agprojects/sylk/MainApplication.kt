@@ -6,6 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.graphics.Typeface
+import androidx.core.content.res.ResourcesCompat
+import com.facebook.react.common.assets.ReactFontManager
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -63,6 +66,41 @@ class MainApplication : Application(), ReactApplication {
         }
     }
 
+  /**
+   * Pin the react-native-vector-icons typefaces into ReactFontManager's
+   * customTypefaceCache at process start.
+   *
+   * Why: RN resolves `fontFamily: "MaterialDesignIcons"` through
+   * ReactFontManager.createAssetTypeface(), which does
+   * Typeface.createFromAsset(assets, "fonts/<family>.ttf") inside a
+   * try/catch that SWALLOWS RuntimeException and falls back to
+   * Typeface.create(<family>, style) -- i.e. the plain system face, in
+   * which every icon codepoint (Private Use Area) renders as tofu. Worse,
+   * getTypeface() then CACHES that fallback in its fontCache for the
+   * lifetime of the process, so one transient failure turns every icon in
+   * the app into a box until the process is force-stopped. Reported in the
+   * field (whole-app tofu on a single handset) and not reproducible here.
+   *
+   * customTypefaceCache is consulted BEFORE that asset path and is never
+   * poisoned by it, so registering here makes the asset lookup irrelevant.
+   * We load from res/font first (goes through the resource loader rather
+   * than AssetManager, which also sidesteps OEM typeface substitution --
+   * Samsung "Font style" / Xiaomi Themes -- a known cause of the same
+   * symptom), and only fall back to the asset copy. If both fail we log it
+   * so the bug reporter shows a cause instead of a silently boxed UI.
+   */
+  private fun registerIconFont(family: String, resId: Int, assetName: String) {
+    val typeface: Typeface? =
+        runCatching { ResourcesCompat.getFont(this, resId) }.getOrNull()
+            ?: runCatching { Typeface.createFromAsset(assets, "fonts/$assetName") }.getOrNull()
+
+    if (typeface != null) {
+      ReactFontManager.getInstance().addCustomFont(family, typeface)
+    } else {
+      SylkLogger.e("FONT: $family unavailable from res/font and assets/fonts -- icons will render as tofu")
+    }
+  }
+
   override fun onCreate() {
     super.onCreate()
     // Initialise the native log sink before anything else so calls
@@ -72,6 +110,11 @@ class MainApplication : Application(), ReactApplication {
     // appear in metro.log / the in-app log view (our logcat capture
     // filters to the SYLK_APP tag and would otherwise drop them).
     SylkLogger.installCrashHandler()
+
+    // Icon fonts: register before any React view can ask for them (see
+    // registerIconFont's comment for the RN fallback/caching trap).
+    registerIconFont("MaterialDesignIcons", R.font.materialdesignicons, "MaterialDesignIcons.ttf")
+    registerIconFont("FontAwesome", R.font.fontawesome, "FontAwesome.ttf")
     // RN 0.76: SoLoader.init now takes an SoMapping. OpenSourceMergedSoMapping
     // is the OSS default (replaces the old `SoLoader.init(this, false)` form).
     SoLoader.init(this, OpenSourceMergedSoMapping)

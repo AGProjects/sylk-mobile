@@ -2061,7 +2061,7 @@ class AudioCallBox extends Component {
     // Deterministic, no crypto needed: the room name is just a label
     // for routing on the conference server, not a secret. Output is
     // padded out to 9 digits so the URI's local-part looks like a
-    // proper extension (e.g. 074219385@videoconference…) instead of
+    // proper extension (e.g. 074219385@conference…) instead of
     // a variable-width 1–9 digit run.
     _hashUsernamesToRoom(input) {
         let h = 5381;
@@ -2096,7 +2096,7 @@ class AudioCallBox extends Component {
             return;
         }
         const myUri = this.props.accountId;
-        const conferenceDomain = this.props.defaultConferenceDomain || 'videoconference.sip2sip.info';
+        const conferenceDomain = this.props.defaultConferenceDomain || 'conference.sip2sip.info';
         const myUser = (myUri && myUri.split('@')[0]) || 'me';
         const peerUser = peerUri.split('@')[0] || 'peer';
         // Room name is a deterministic numeric hash of the sorted
@@ -4416,7 +4416,7 @@ AudioCallBox.propTypes = {
 	// so the parent can persist it as an inbound chat message from
 	// the remote party and sync it to other devices of the user.
 	saveCallRecording: PropTypes.func,
-	// Default sylk conference domain (e.g. videoconference.sip2sip.info)
+	// Default sylk conference domain (e.g. conference.sip2sip.info)
 	// used to compose the room URI sent in conference_request metadata.
 	// Falls back to the hard-coded default inside sendConferenceRequest
 	// when omitted, so this prop being undefined never breaks the

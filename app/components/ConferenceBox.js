@@ -1917,7 +1917,7 @@ class ConferenceBox extends Component {
             // misleading. Anything else that ever wants to special-
             // case conference recordings (e.g. transcript routing)
             // can read the same flag instead of pattern-matching the
-            // receiver URI for @videoconference.
+            // receiver URI for @conference.
             is_conference: true,
         };
         if (r && r.peaks && Array.isArray(r.peaks.l) && Array.isArray(r.peaks.r)) {

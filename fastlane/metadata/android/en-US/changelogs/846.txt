@@ -1,0 +1,3 @@
+  * Treat a conference room name in either domain spelling as an address echo, so name-sync does not push it
+  * Never move a message state backwards on late or conflicting receipts
+  * Fix crash when callContact is null

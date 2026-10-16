@@ -71,7 +71,15 @@ function playBundledSound(filename) {
     });
 }
 import OpenPGP from "react-native-fast-openpgp";
+import abRules from './addressbookRules';
 import exportAnnounce from './ExportAnnounce';
+import abNotify from './addressbookNotify';
+import bulkDelete from './messagesBulkDelete';
+import acctStorage from './accountStorage';
+import { encodeAvatarBase64 } from './avatarImage';
+import avatarStore, { setContactResolver as setAvatarContactResolver } from './avatars';
+import AvatarConflictModal from './components/AvatarConflictModal';
+import abOrigin from './addressbookOrigin';
 import { CAPABILITIES_CONTENT_TYPE, parseCallCapabilities,
          setPeerCallCapabilities } from './components/CallCapabilities';
 import { dispatchIncomingZrtp, ZRTP_CONTENT_TYPE, setVideoMaxBitrateKbps, setVideoEncoderTarget, setEncryptionMode, stopZrtpForCall, reapplyVideoEncoderParams, registerZrtpRs1Handlers, setLocalDeviceId } from './components/CallZrtp';
@@ -1703,6 +1711,9 @@ class Sylk extends Component {
         this._locationEngine.sim = this._simulator;
 
 		this.deviceId = getUniqueIdSync();
+		// Launch clock, so every [ab] [lifecycle] line can say how long the
+		// addressbook took to get where it got.
+		this._abBootAt = Date.now();
 		this.contactIndex = {};
 		this.contactsIndexes = {};
 		this.lastLookupKey = null;
@@ -1732,7 +1743,7 @@ class Sylk extends Component {
             defaultDomain: 'sylk.link',
             sylkDomain: 'sylk.link',
             publicUrl: 'https://webrtc.sipthor.net',
-            defaultConferenceDomain: 'videoconference.sip2sip.info',
+            defaultConferenceDomain: 'conference.sip2sip.info',
             pstnAccessUrl: 'https://sip2sip.info/help',
             // Free-form array of payment-account records published by
             // the server under pstn.payment_accounts. Each entry is
@@ -2030,6 +2041,7 @@ class Sylk extends Component {
             isTyping: false,
             avatarPhotos: {},
             avatarEmails: {},
+            avatarNames: {},
             showConferenceModal: false,
             keyDifferentOnServer: false,
             serverPublicKey: null,
@@ -2039,6 +2051,9 @@ class Sylk extends Component {
             historyFilter: null,
             showExportPrivateKeyModal: false,
             showRestoreKeyModal: false,
+            // Contact avatars: the server-or-local choice window, when open
+            // ({items, account, resolve}). docs/CONTACT-AVATARS.md.
+            avatarConflict: null,
             showQRCodeScanner: false,
             navigationItems: {today: false, recent: false, conference: false},
             myuuid: null,
@@ -4304,7 +4319,11 @@ class Sylk extends Component {
 
           } else {
                console.log("Read contacts permission denied")
-			   this.setState({addresBookLoaded: true });
+			   // addresBookLoaded doubles as "stop trying to fetch", so it is
+			   // set on a DENIAL too -- it does not mean the phonebook was
+			   // read. Record the denial separately, or code that wants to know
+			   // whether a phonebook exists reads the wrong flag.
+			   this.setState({addresBookLoaded: true, abPermissionDenied: true });
 
           }
         } catch (err) {
@@ -4378,6 +4397,11 @@ class Sylk extends Component {
 		  let contact_cards = [];
 		  let avatarPhotos = {};
 		  let avatarEmails = {};
+		  // Address -> the name on the address-book card. The photo and the
+		  // email were being taken from the phonebook and the NAME was not, so
+		  // a number the user has as "Bob" showed as the number itself -- the
+		  // one field they actually read.
+		  let avatarNames = {};
 		  let seen_uris = new Map();
 
 		  // Photo/email indexing is deliberately OUTSIDE the seen_uris dedup
@@ -4405,6 +4429,12 @@ class Sylk extends Component {
 			const k = this._abPhotoKey(key);
 			if (!k || !value) return;
 			if (!(k in avatarEmails)) avatarEmails[k] = value;
+		  };
+
+		  const _indexName = (key, value) => {
+			const k = this._abPhotoKey(key);
+			if (!k || !value) return;
+			if (!(k in avatarNames)) avatarNames[k] = value;
 		  };
 
 		  for (let contact of contacts) {
@@ -4452,6 +4482,16 @@ class Sylk extends Component {
 				}
 			  }
 			  if (number_stripped && _firstEmail) _indexEmail(number_stripped, _firstEmail);
+			  // Same variant spread as the photo: the card holds
+			  // "+31 6 46 63 04 25", the contact is stored bare as
+			  // "+31646630425", and a call may arrive as "0031646630425" or
+			  // with a domain. One index answers all of them.
+			  if (number_stripped && _nameKey) {
+				_indexName(number_stripped, _nameKey);
+				for (const v of (this._phoneNumberVariants(number_stripped) || [])) {
+				  _indexName(v, _nameKey);
+				}
+			  }
 
 			  if (number_stripped && !seen_uris.has(number_stripped)) {
 				contact_cards.push({
@@ -4499,10 +4539,15 @@ class Sylk extends Component {
 		  }
 
 		  console.log('[ab] indexed', Object.keys(avatarPhotos).length, 'photo keys,',
+			  Object.keys(avatarNames).length, 'name keys,',
 			  Object.keys(avatarEmails).length, 'email keys from',
 			  contact_cards.length, 'address book entries');
 
-		  this.setState({ contacts: contact_cards, avatarPhotos, avatarEmails });
+		  // The phonebook was genuinely read. Distinct from addresBookLoaded,
+		  // which is also raised on a permission denial to stop the retry loop.
+		  this._abPhonebookRead = true;
+
+		  this.setState({ contacts: contact_cards, avatarPhotos, avatarEmails, avatarNames });
 		  this.setState({addresBookLoaded: true });
 	}
 
@@ -4629,15 +4674,42 @@ class Sylk extends Component {
 	// contact save anyway. Doing it as a single setState keeps this to one
 	// re-render regardless of address-book size.
 	_abApplyPhotosToContacts = () => {
-		if (!this.state.avatarPhotos || Object.keys(this.state.avatarPhotos).length === 0) {
+		// The pass carries THREE things off the phonebook -- photo, email and
+		// name -- so it must not be gated on the photo map alone. A phonebook
+		// full of cards that have names and no thumbnails produces an empty
+		// avatarPhotos and used to abort here, taking the name adoption with
+		// it: that is why a number sitting in the OS address book under a real
+		// name still displayed as the number.
+		const _have = (m) => m && Object.keys(m).length > 0;
+		if (!_have(this.state.avatarPhotos)
+		    && !_have(this.state.avatarNames)
+		    && !_have(this.state.avatarEmails)) {
 			return;
 		}
+
+		// Declared OUT here, not inside the updater: the completion callback
+		// below is a SIBLING function, not nested in the updater, so a const
+		// declared in the updater is not in scope there. It read as working
+		// only because the old photo-map guard returned before the setState on
+		// every launch with no phonebook thumbnails -- the moment the pass
+		// actually ran, the callback threw ReferenceError and took the screen
+		// with it.
+		//
+		// React may call an updater more than once for one commit, so the list
+		// is cleared at the top of the updater rather than accumulated: what
+		// the callback must act on is the LAST run's adoptions, never a
+		// concatenation of every replay.
+		const _adopted = [];
 
 		this.setState(prevState => {
 			const contacts = prevState.allContacts;
 			if (!Array.isArray(contacts) || contacts.length === 0) return null;
 
 			let changed = 0;
+			// Persisted after the state update, not inside it: saveSylkContact
+			// writes SQL and replicates to the server, neither of which belongs
+			// in a setState reducer.
+			_adopted.length = 0;
 			const next = contacts.map(c => {
 				if (!c || !c.uri) return c;
 
@@ -4660,6 +4732,19 @@ class Sylk extends Component {
 					if (email) patch.email = email;
 				}
 
+				// Name the unnamed, ONCE. Only when the stored name carries no
+				// information (empty, or an echo of the address): a name the
+				// user typed is never overwritten by the phonebook, and once a
+				// real name is adopted this test stops matching, so it does not
+				// run again on the next launch.
+				if (this._abNameIsEcho(c.name, c.uri)) {
+					const abName = this._abNameForContact(c.uri);
+					if (abName && abName !== c.name) {
+						patch.name = abName;
+						_adopted.push({ uri: c.uri, contact: c, name: abName });
+					}
+				}
+
 				if (Object.keys(patch).length === 0) return c;
 				changed = changed + 1;
 				return { ...c, ...patch };
@@ -4673,6 +4758,19 @@ class Sylk extends Component {
 			// the old objects otherwise, and callers reading through it would
 			// keep serving the photo-less copies.
 			if (typeof this.buildContactIndex === 'function') this.buildContactIndex();
+			// New phonebook photos: they go to the server as contact avatars.
+			avatarStore.phonebookChanged();
+			// Store what the address book named, so it survives the restart and
+			// reaches the other clients: a real local name beats a server
+			// URI-echo (chapter 8, "push up"), so the reconcile publishes it.
+			for (const _a of _adopted) {
+				try {
+					this.saveSylkContact(_a.uri, { ..._a.contact, name: _a.name }, 'address-book-name');
+				} catch (e) {
+					console.log('[ab] [name] could not save the address book name for',
+						_a.uri, e && e.message);
+				}
+			}
 		});
 	};
 
@@ -4712,6 +4810,48 @@ class Sylk extends Component {
 	//   4. display name — last resort, and only when the name is a real name
 	//      (not a URI echo), because auto-created contacts store the URI as
 	//      their name and would match unrelated cards.
+	// Is this stored name only an echo of the address? R3 in
+	// docs/addressbook/addressbook.md: a name equal to the URI, the URI without
+	// its '@', or the username carries no information. Such a contact is
+	// unnamed, so the address book is free to name it.
+	// The addressbook's naming rules live in addressbookRules.js, shared verbatim
+	// with sylk-desktop. These _ab* members delegate to it, bound to this
+	// account's domain, conference bridge and dial plan (read at call time).
+	_abRules = (() => {
+	    const app = this;
+	    return abRules.create({
+	        get defaultDomain() { return app.state.defaultDomain; },
+	        get defaultConferenceDomain() { return app.state.defaultConferenceDomain; },
+	        get pstnRules() { return app.getEffectivePstnRules(); },
+	        onPstnCanon: (from, to) => app._abLogPstnCanon(from, to)
+	    });
+	})();
+
+	_abNameIsEcho = (name, uri) => this._abRules.nameIsEcho(name, uri);
+
+	// The address-book name for an address, across the same spellings the
+	// photo lookup covers.
+	_abNameForContact = (uri) => {
+		const names = this.state.avatarNames;
+		if (!names || !uri) return null;
+		const _get = (k) => {
+			const key = this._abPhotoKey(k);
+			return key ? (names[key] || null) : null;
+		};
+		let hit = _get(uri);
+		if (hit) return hit;
+		for (const v of (this._phoneNumberVariants(uri) || [])) {
+			hit = _get(v);
+			if (hit) return hit;
+		}
+		const at = String(uri).indexOf('@');
+		if (at > -1) {
+			hit = _get(String(uri).substring(0, at));
+			if (hit) return hit;
+		}
+		return null;
+	};
+
 	_abPhotoForContact = (uri, name) => {
 		const photos = this.state.avatarPhotos;
 		if (!photos) return null;
@@ -4763,6 +4903,12 @@ class Sylk extends Component {
             return;
         }
 
+        if (!this.state.contactsLoaded) {
+            try { await this._migrateVideoconferenceRooms(); } catch (e) {
+                utils.timestampedLog('[conf-migrate] failed: ' + (e && e.message));
+            }
+        }
+
         let blockedUris = [];
         let favoriteUris = [];
         let missedCalls = [];
@@ -4812,7 +4958,18 @@ class Sylk extends Component {
                     let ab_contacts = this.lookupABContacts(contact.uri);
 
                     if (ab_contacts.length > 0) {
-                        if (!contact.name || contact.name === '') {
+                        // "Unnamed" is an ECHO of the address, not just an
+                        // empty string. This tested for empty and could
+                        // therefore never fire: newContact() derives a name
+                        // from the URI when the row has none, so by the time we
+                        // get here contact.name is at worst "+31646630425" (or,
+                        // for a row written before the URI was brought back to
+                        // bare, "+31646630425@sylk.link"). Both are echoes, both
+                        // carry no information, and both were blocking the
+                        // address-book name from being adopted -- which is why
+                        // a number saved as a named card still showed as a
+                        // number. A name the user actually typed still wins.
+                        if (this._abNameIsEcho(contact.name, contact.uri)) {
                             console.log('[load:update] name', contact.uri, JSON.stringify(contact.name), '->', JSON.stringify(ab_contacts[0].name));
                             contact.name = ab_contacts[0].name;
                             updated = 'name';
@@ -5115,7 +5272,7 @@ class Sylk extends Component {
                     const _tag = finalContacts.filter(c => c && Array.isArray(c.tags) && c.tags.indexOf('calls') > -1);
                     // Calls category = a lastCallTimestamp is set AND it's not a
                     // conference room (those are excluded from the Calls view).
-                    const _callsCat = _ts.filter(c => (c.uri || '').indexOf('@videoconference.') === -1);
+                    const _callsCat = _ts.filter(c => !this._abIsConferenceUri(c.uri || ''));
                     // Recent category = contacts with activity in the last 3 days
                     // (timestamp >= start-of-day three days ago) — mirrors the
                     // periodFilter==='recent' gate in ContactsListBox.
@@ -5172,7 +5329,10 @@ class Sylk extends Component {
             // bare rows in SQL to the canonical @domain form and
             // logs every change.
             setTimeout(() => {
-                this.migrateBarePhoneUris();
+                // NOT here. Healing runs after the server addressbook has been
+                // fetched AND applied -- see _abMarkImportFinished. Healing the
+                // local rows first meant healing data we were about to
+                // overwrite, and the arriving snapshot then re-dirtied them.
             }, 200);
 
             // Clean up pre-existing duplicate contact rows (same account+uri,
@@ -5234,20 +5394,434 @@ class Sylk extends Component {
     }
 
     // Walk every contact row in SQL for the active account and bring
-    // its URI to the canonical shape:
-    //   • missing @domain          →   append "@<defaultDomain>"
-    //   • starts with "00<digits>" →   rewrite as "+<digits>"
+    // its URI to the canonical shape (R4, docs/addressbook/addressbook.md §3):
+    //   • phone number              →   BARE E.164, no domain
+    //   • starts with "00<digits>"  →   rewrite as "+<digits>"
+    //   • anything else, if bare    →   append "@<defaultDomain>"
+    //
+    // The phone rule used to run the other way here: every bare URI, numbers
+    // included, had the account domain appended. That fought _abNormalizeUri
+    // and the XCAP document (which holds uri="%2B3180081867" type="tel"), and
+    // since this runs on every launch rather than once, the two spellings
+    // flip-flopped -- a contact UPDATE and a re-put per boot, and eventually
+    // two rows for one number, which is what the collision guard below exists
+    // to notice. It now repairs in the correct direction as well: a row that
+    // an earlier build (or an older client) left domain-qualified is brought
+    // back to bare.
 
-    async migrateBarePhoneUris() {
+    // The form the LOCAL STORE must hold.
+    //
+    //   PSTN          -> bare +E.164, dial plan applied (_abCanonicalPstn)
+    //   a room        -> UNCHANGED: room@conference.X, the one spelling WebRTC,
+    //                    SIP and XCAP all use
+    //   anything else -> lowercased and trimmed
+    //
+    // Phone numbers are the opposite case and that is not an inconsistency:
+    // there is one spelling of a number, the domain is pure transport, and
+    // both clients agree to store it bare.
+    _abStoredUri = (uri) => {
+        const u = (uri || '').trim();
+        if (!u) return u;
+        try {
+            return this._abCanonicalPstn(u) || u;
+        } catch (e) {
+            return u;
+        }
+    };
+
+    // Bring this account's stored keys to _abStoredUri. Once, ever.
+    //
+    // ORDER MATTERS, and it is the whole reason this is one function rather
+    // than two passes: the HISTORY keys move first, the contact rows second.
+    // A contact rewritten to its canonical address while the messages are
+    // still filed under the old spelling is a contact whose conversation has
+    // vanished -- the rows are still there, nothing points at them any more.
+    async _abMigrateStoreToCanonical() {
+        const account = this.state.accountId;
+        if (!account) return;
+        const key = 'ab_store_canon_v1.' + account;
+        try {
+            const done = await AsyncStorage.getItem(key);
+            if (done) {
+                // Every other path here logs; leaving this one silent made a
+                // completed migration and a migration that never ran look
+                // identical in the log, which is the one question anybody
+                // asks of it.
+                const when = Number(done);
+                utils.timestampedLog('[ab] [migrate] store already canonicalised'
+                    + (when ? ' on ' + new Date(when).toISOString() : '')
+                    + ' — nothing to do');
+                return;
+            }
+        } catch (e) { /* unreadable marker: better to run again than never */ }
+
+        const started = Date.now();
+        const seen = new Set();
+        const addUri = (u) => { const v = (u || '').trim(); if (v) seen.add(v); };
+        try {
+            const msgs = await this.ExecuteQuery(
+                'SELECT DISTINCT from_uri AS u FROM messages WHERE account = ? '
+                + 'UNION SELECT DISTINCT to_uri AS u FROM messages WHERE account = ?',
+                [account, account]);
+            for (let i = 0; i < msgs.rows.length; i++) addUri(msgs.rows.item(i).u);
+            const cts = await this.ExecuteQuery(
+                'SELECT uri, uris FROM contacts WHERE account = ?', [account]);
+            for (let i = 0; i < cts.rows.length; i++) {
+                const row = cts.rows.item(i);
+                addUri(row.uri);
+                String(row.uris || '').split(',').forEach(addUri);
+            }
+        } catch (e) {
+            utils.timestampedLog('[ab] [migrate] could not read the store: ' + (e && e.message));
+            return;                     // no marker: try again next launch
+        }
+
+        const moves = [];
+        for (const old of seen) {
+            const wanted = this._abStoredUri(old);
+            if (wanted && wanted !== old) moves.push([old, wanted]);
+        }
+        if (!moves.length) {
+            utils.timestampedLog('[ab] [migrate] store is already canonical ('
+                + seen.size + ' address(es) checked)');
+            try { await AsyncStorage.setItem(key, String(Date.now())); } catch (e) {}
+            return;
+        }
+        utils.timestampedLog('[ab] [migrate] ' + moves.length + ' of ' + seen.size
+            + ' address(es) are not canonical — moving history first, then the contacts');
+
+        // ---- 1. history -------------------------------------------------
+        let rowsMoved = 0;
+        for (const [old, wanted] of moves) {
+            for (const column of ['from_uri', 'to_uri']) {
+                try {
+                    const res = await this.ExecuteQuery(
+                        'UPDATE messages SET ' + column + ' = ? WHERE account = ? AND ' + column + ' = ?',
+                        [wanted, account, old]);
+                    rowsMoved += (res && res.rowsAffected) || 0;
+                } catch (e) {
+                    utils.timestampedLog('[ab] [migrate] messages.' + column + ' ' + old
+                        + ' -> ' + wanted + ' FAILED: ' + (e && e.message));
+                }
+            }
+            // The per-contact folder is named after the address (file
+            // transfers use it verbatim; the calls/ subfolder only strips
+            // path separators, which these addresses do not contain), so it
+            // moves with the key or the attachments are orphaned.
+            try {
+                const from = RNFS.DocumentDirectoryPath + '/' + account + '/' + old;
+                const to = RNFS.DocumentDirectoryPath + '/' + account + '/' + wanted;
+                if (await RNFS.exists(from) && !(await RNFS.exists(to))) {
+                    await RNFS.moveFile(from, to);
+                    await this._rewriteContactFilePaths(account, old, wanted);
+                    utils.timestampedLog('[ab] [migrate] files ' + old + ' -> ' + wanted);
+                }
+            } catch (e) {
+                utils.timestampedLog('[ab] [migrate] could not move the files of ' + old
+                    + ': ' + (e && e.message));
+            }
+        }
+        utils.timestampedLog('[ab] [migrate] history: ' + rowsMoved + ' message row(s) rekeyed');
+
+        // ---- 2. contacts ------------------------------------------------
+        let contactsMoved = 0;
+        try {
+            const cts = await this.ExecuteQuery(
+                'SELECT contact_id, uri, uris FROM contacts WHERE account = ?', [account]);
+            for (let i = 0; i < cts.rows.length; i++) {
+                const row = cts.rows.item(i);
+                const wantedUri = this._abStoredUri(row.uri);
+                const wantedUris = String(row.uris || '').split(',')
+                    .map(u => this._abStoredUri(u)).filter(Boolean);
+                // De-duplicate by value, and never let a secondary repeat the
+                // primary: two spellings of one address become one address.
+                const uniqUris = [...new Set(wantedUris)].filter(u => u !== wantedUri);
+                const nextUris = uniqUris.join(',');
+                if (wantedUri === row.uri && nextUris === String(row.uris || '')) continue;
+                if (wantedUri !== row.uri) {
+                    const clash = await this.ExecuteQuery(
+                        'SELECT contact_id FROM contacts WHERE account = ? AND lower(uri) = lower(?) AND contact_id != ?',
+                        [account, wantedUri, row.contact_id]);
+                    if (clash.rows && clash.rows.length) {
+                        utils.timestampedLog('[ab] [migrate] SKIP ' + row.uri + ' -> ' + wantedUri
+                            + ': another row already holds it (' + clash.rows.item(0).contact_id
+                            + ') — merge them by hand');
+                        continue;
+                    }
+                }
+                await this.ExecuteQuery(
+                    'UPDATE contacts SET uri = ?, uris = ? WHERE account = ? AND contact_id = ?',
+                    [wantedUri, nextUris, account, row.contact_id]);
+                contactsMoved += 1;
+                utils.timestampedLog('[ab] [migrate] contact ' + row.uri + ' -> ' + wantedUri
+                    + (nextUris !== String(row.uris || '') ? ' uris=[' + nextUris + ']' : ''));
+            }
+        } catch (e) {
+            utils.timestampedLog('[ab] [migrate] contact pass failed: ' + (e && e.message));
+            return;                     // no marker: the history moved, the
+                                        // contacts get another go next launch
+        }
+
+        try { await AsyncStorage.setItem(key, String(Date.now())); } catch (e) {}
+        utils.timestampedLog('[ab] [migrate] done in ' + (Date.now() - started) + 'ms: '
+            + rowsMoved + ' message row(s), ' + contactsMoved + ' contact(s)');
+        if (contactsMoved) {
+            await this.loadSylkContacts('store-canonicalised');
+        }
+    }
+
+    // File transfers store absolute paths into the per-contact folder
+    // (<Documents>/<account>/<contact>/<transfer>/<file>), in the local_url
+    // column and in metadata.local_url. When a contact is rekeyed and its
+    // folder moved, both have to follow or the attachments are orphaned.
+    async _rewriteContactFilePaths(account, oldUri, newUri) {
+        const oldSeg = '/' + account + '/' + oldUri + '/';
+        const newSeg = '/' + account + '/' + newUri + '/';
+        await this.ExecuteQuery(
+            'UPDATE messages SET local_url = replace(local_url, ?, ?), metadata = replace(metadata, ?, ?) '
+            + 'WHERE account = ? AND (local_url LIKE ? OR metadata LIKE ?)',
+            [oldSeg, newSeg, oldSeg, newSeg, account, '%' + oldSeg + '%', '%' + oldSeg + '%']);
+    }
+
+    // One-off repair for devices where _abMigrateStoreToCanonical already
+    // moved contact folders without rewriting the file paths: a file-transfer
+    // row whose file is missing, but present under the folder of the row's
+    // current contact, is pointed there. Marks itself done per account.
+    async _repairMovedFilePaths() {
+        const account = this.state.accountId;
+        if (!account) return;
+        const key = 'ft_path_repair_v1.' + account;
+        try {
+            if (await AsyncStorage.getItem(key)) return;
+        } catch (e) { /* unreadable marker: run again */ }
+
+        const base = RNFS.DocumentDirectoryPath + '/' + account + '/';
+        const marker = '/' + account + '/';
+        let checked = 0;
+        let fixed = 0;
+        try {
+            const res = await this.ExecuteQuery(
+                "SELECT msg_id, from_uri, to_uri, metadata, local_url FROM messages WHERE account = ? "
+                + "AND content_type = 'application/sylk-file-transfer'", [account]);
+            for (let i = 0; i < res.rows.length; i++) {
+                const r = res.rows.item(i);
+                let meta = {};
+                try { meta = r.metadata ? JSON.parse(r.metadata) : {}; } catch (e) { continue; }
+                const stored = meta.local_url || r.local_url || '';
+                const path = stored.replace(/^file:\/\//, '');
+                const idx = path.indexOf(marker);
+                if (idx === -1) continue;
+                const rest = path.substring(idx + marker.length);     // <contact>/<transfer>/<file>
+                const slash = rest.indexOf('/');
+                if (slash === -1) continue;
+                const contact = r.from_uri === account ? r.to_uri : r.from_uri;
+                if (!contact || rest.substring(0, slash) === contact) continue;
+                checked += 1;
+                if (await RNFS.exists(path)) continue;
+                const candidate = base + contact + rest.substring(slash);
+                if (!(await RNFS.exists(candidate))) continue;
+                const next = (stored.startsWith('file://') ? 'file://' : '') + candidate;
+                if (meta.local_url) meta.local_url = next;
+                await this.ExecuteQuery(
+                    'UPDATE messages SET local_url = ?, metadata = ? WHERE account = ? AND msg_id = ?',
+                    [r.local_url ? next : r.local_url, JSON.stringify(meta), account, r.msg_id]);
+                fixed += 1;
+            }
+        } catch (e) {
+            utils.timestampedLog('[ft-repair] failed: ' + (e && e.message));
+            return;
+        }
+        try { await AsyncStorage.setItem(key, String(Date.now())); } catch (e) {}
+        utils.timestampedLog('[ft-repair] ' + fixed + ' of ' + checked
+            + ' file path(s) outside their contact folder repaired');
+    }
+
+    // One-off move of locally stored conference rooms from the old WebRTC
+    // bridge spelling (room@videoconference.X) to the single bridge domain the
+    // network now uses (room@conference.X), the spelling XCAP already holds:
+    // the messages keyed on the room, the per-room file folder together with
+    // the absolute paths that point into it, and the contact rows. Runs before
+    // the first contact load of the account, so the in-memory list and every
+    // server match only ever see the new spelling. Marks itself done per
+    // account; a pass that fails leaves no marker and runs again next launch.
+    async _migrateVideoconferenceRooms() {
+        const account = this.state.accountId;
+        if (!account) return;
+        const key = 'conf_domain_v1.' + account;
+        try {
+            if (await AsyncStorage.getItem(key)) return;
+        } catch (e) { /* unreadable marker: run again */ }
+
+        const toConf = (u) => {
+            const v = (u || '').trim();
+            const at = v.indexOf('@');
+            if (at === -1) return v;
+            const dom = v.substring(at + 1).toLowerCase();
+            if (!dom.startsWith('videoconference.')) return v;
+            return v.substring(0, at).toLowerCase() + '@' + dom.substring('video'.length);
+        };
+
+        const started = Date.now();
+        const seen = new Set();
+        let contactRows = [];
+        try {
+            const msgs = await this.ExecuteQuery(
+                "SELECT DISTINCT from_uri AS u FROM messages WHERE account = ? AND from_uri LIKE '%@videoconference.%' "
+                + "UNION SELECT DISTINCT to_uri AS u FROM messages WHERE account = ? AND to_uri LIKE '%@videoconference.%'",
+                [account, account]);
+            for (let i = 0; i < msgs.rows.length; i++) {
+                const u = (msgs.rows.item(i).u || '').trim();
+                if (u) seen.add(u);
+            }
+            const cts = await this.ExecuteQuery(
+                "SELECT contact_id, uri, uris FROM contacts WHERE account = ? "
+                + "AND (uri LIKE '%@videoconference.%' OR uris LIKE '%@videoconference.%')",
+                [account]);
+            for (let i = 0; i < cts.rows.length; i++) {
+                const row = cts.rows.item(i);
+                contactRows.push(row);
+                if (row.uri) seen.add(row.uri.trim());
+                String(row.uris || '').split(',').map(u => u.trim()).filter(Boolean).forEach(u => seen.add(u));
+            }
+        } catch (e) {
+            utils.timestampedLog('[conf-migrate] could not read the store: ' + (e && e.message));
+            return;
+        }
+
+        const moves = [];
+        for (const old of seen) {
+            const wanted = toConf(old);
+            if (wanted !== old) moves.push([old, wanted]);
+        }
+        if (!moves.length) {
+            try { await AsyncStorage.setItem(key, String(Date.now())); } catch (e) {}
+            return;
+        }
+        utils.timestampedLog('[conf-migrate] ' + moves.length + ' videoconference address(es) to move');
+
+        // ---- 1. messages, files ------------------------------------------
+        let rowsMoved = 0;
+        const base = RNFS.DocumentDirectoryPath + '/' + account + '/';
+        for (const [old, wanted] of moves) {
+            for (const column of ['from_uri', 'to_uri']) {
+                try {
+                    const res = await this.ExecuteQuery(
+                        'UPDATE messages SET ' + column + ' = ? WHERE account = ? AND ' + column + ' = ?',
+                        [wanted, account, old]);
+                    rowsMoved += (res && res.rowsAffected) || 0;
+                } catch (e) {
+                    utils.timestampedLog('[conf-migrate] messages.' + column + ' ' + old
+                        + ' -> ' + wanted + ' FAILED: ' + (e && e.message));
+                }
+            }
+
+            // The per-contact folder is named after the address and file
+            // transfers store absolute paths into it (local_url column and
+            // metadata.local_url), so the folder and the paths move together.
+            let filesOk = true;
+            try {
+                const from = base + old;
+                const to = base + wanted;
+                if (await RNFS.exists(from)) {
+                    if (!(await RNFS.exists(to))) {
+                        await RNFS.moveFile(from, to);
+                    } else {
+                        for (const entry of await RNFS.readDir(from)) {
+                            const dest = to + '/' + entry.name;
+                            if (!(await RNFS.exists(dest))) await RNFS.moveFile(entry.path, dest);
+                        }
+                    }
+                    utils.timestampedLog('[conf-migrate] files ' + old + ' -> ' + wanted);
+                }
+            } catch (e) {
+                filesOk = false;
+                utils.timestampedLog('[conf-migrate] could not move the files of ' + old
+                    + ': ' + (e && e.message));
+            }
+            if (filesOk) {
+                try {
+                    await this._rewriteContactFilePaths(account, old, wanted);
+                } catch (e) {
+                    utils.timestampedLog('[conf-migrate] file paths of ' + old + ' FAILED: ' + (e && e.message));
+                }
+            }
+        }
+
+        // ---- 2. contacts --------------------------------------------------
+        let contactsMoved = 0;
+        try {
+            for (const row of contactRows) {
+                const wantedUri = toConf(row.uri);
+                const wantedUris = String(row.uris || '').split(',').map(u => toConf(u)).filter(Boolean);
+                const nextUris = [...new Set(wantedUris)].filter(u => u !== wantedUri).join(',');
+                if (wantedUri === row.uri && nextUris === String(row.uris || '')) continue;
+                if (wantedUri !== row.uri) {
+                    const clash = await this.ExecuteQuery(
+                        'SELECT contact_id FROM contacts WHERE account = ? AND lower(uri) = lower(?) AND contact_id != ?',
+                        [account, wantedUri, row.contact_id]);
+                    if (clash.rows && clash.rows.length) {
+                        utils.timestampedLog('[conf-migrate] SKIP ' + row.uri + ' -> ' + wantedUri
+                            + ': another row already holds it (' + clash.rows.item(0).contact_id + ')');
+                        continue;
+                    }
+                }
+                await this.ExecuteQuery(
+                    'UPDATE contacts SET uri = ?, uris = ? WHERE account = ? AND contact_id = ?',
+                    [wantedUri, nextUris, account, row.contact_id]);
+                contactsMoved += 1;
+                utils.timestampedLog('[conf-migrate] contact ' + row.uri + ' -> ' + wantedUri);
+            }
+        } catch (e) {
+            utils.timestampedLog('[conf-migrate] contact pass failed: ' + (e && e.message));
+            return;
+        }
+
+        try { await AsyncStorage.setItem(key, String(Date.now())); } catch (e) {}
+        utils.timestampedLog('[conf-migrate] done in ' + (Date.now() - started) + 'ms: '
+            + rowsMoved + ' message row(s), ' + contactsMoved + ' contact(s)');
+    }
+
+    // ONCE per launch, per account, and only on the merged state: the server
+    // addressbook has been fetched and applied before this runs (called from
+    // _abMarkImportFinished). See docs/addressbook/addressbook.md chapter 25.
+    async healContactStore(source='startup') {
         if (!this.state.accountId) {
             return;
         }
+        const _acc = this.state.accountId;
+        if (!this._abHealedAccounts) this._abHealedAccounts = new Set();
+        if (this._abHealedAccounts.has(_acc)) {
+            // A heal that runs more than once per launch is a feedback path:
+            // it would see whatever the last pass published come back and act
+            // on it again. Once, then stop -- if there is still work next
+            // launch, something else is un-healing it and THAT is the bug.
+            utils.timestampedLog('[ab] [lifecycle] heal already done this run for ' + _acc
+                + ' (edge=' + source + ')');
+            return;
+        }
+        if (this.state.addressBookServer && !this._abServerFetched) {
+            utils.timestampedLog('[ab] [lifecycle] heal deferred — no authoritative server '
+                + 'addressbook yet (edge=' + source + ')');
+            return;
+        }
+        this._abHealedAccounts.add(_acc);
+        const _healStarted = Date.now();
+        utils.timestampedLog('[ab] [lifecycle] heal starting (edge=' + source
+            + ', server addressbook ' + (this.state.addressBookServer ? 'applied' : 'not used') + ')');
+
+        // The one-off move of the whole store to the canonical spelling of a
+        // PHONE NUMBER -- history keys first, then the contact rows. Rooms are
+        // untouched (see _migrateVideoconferenceRooms). The
+        // pass marks itself done, so from the second launch onwards it returns
+        // immediately and the per-row heal below is what keeps things canonical.
+        await this._abMigrateStoreToCanonical();
+        try { await this._repairMovedFilePaths(); } catch (e) {}
         const defaultDomain = this.state.defaultDomain
             || (this.state.accountId.includes('@')
                 ? this.state.accountId.split('@')[1]
                 : null);
         if (!defaultDomain) {
-            console.log('migrateBarePhoneUris: no defaultDomain yet, skipping this pass');
+            console.log('healContactStore: no defaultDomain yet, skipping this pass');
             return;
         }
 
@@ -5255,86 +5829,371 @@ class Sylk extends Component {
         // when no rewrite is needed (already canonical).
         const canonicalize = (oldUri) => {
             if (!oldUri) return null;
-            const atIdx = oldUri.indexOf('@');
-            let localPart = atIdx > -1 ? oldUri.substring(0, atIdx) : oldUri;
-            let domainPart = atIdx > -1 ? oldUri.substring(atIdx) : null;
-            const wasBare = domainPart == null;
+            // _abStoredUri gives bare +E.164 for a number (dial plan applied)
+            // and leaves everything else, rooms included, as it is. The only
+            // thing left to decide here is the case it does not cover -- a
+            // bare SIP username, which is not addressable without a domain and
+            // never was.
+            let wanted = this._abStoredUri(oldUri) || oldUri;
+            if (wanted.indexOf('@') === -1 && !utils.isPhoneNumber(wanted)) {
+                wanted = wanted + '@' + defaultDomain;
+            }
+            return wanted === oldUri ? null : wanted;
+        };
 
-            let changed = false;
-            // 00 → + for phone numbers.
-            if (utils.isPhoneNumber(localPart) && localPart.startsWith('00')) {
-                localPart = '+' + localPart.substring(2);
-                changed = true;
+        // The name a contact should carry when its stored name is only an old
+        // spelling of its own address. A phone contact has no real name unless
+        // someone typed one, so newContact derives the number as its name --
+        // and a row created from the wire form derived "+31646630425@sylk.link"
+        // and kept it, which is what the list still showed after the address
+        // itself had been brought back to bare. Returns null when there is
+        // nothing to change; a real name (no '@', not the number) never
+        // matches, so "Mama" is safe by construction.
+        const repairName = (name, oldUri, newUri) => {
+            const _name = (name || '').trim();
+            if (!_name) return null;
+            const lowered = _name.toLowerCase();
+            const candidates = new Set();
+            for (const u of [oldUri, newUri]) {
+                if (!u) continue;
+                candidates.add(u.toLowerCase());
+                candidates.add(u.split('@')[0].toLowerCase());
             }
-            // Bare → @defaultDomain.
-            if (wasBare) {
-                domainPart = '@' + defaultDomain;
-                changed = true;
-            }
-            if (!changed) return null;
-            return localPart + (domainPart || '');
+            if (!candidates.has(lowered)) return null;
+            const wanted = (newUri || oldUri || '').split('@')[0];
+            return wanted && wanted !== _name ? wanted : null;
         };
 
         try {
             // Pre-filter: rows that might need a rewrite. Catches both
             // "no @" rows and "starts with 00" rows in one pass; the
             // canonicalize helper above is the authoritative decision.
+            // Widened to catch the rows this pass now has to REPAIR as well
+            // as the ones it always canonicalised: anything domain-qualified
+            // that starts like a phone number ('+' or a leading 0). A SIP
+            // username that merely starts with a zero is selected too and then
+            // dropped by canonicalize(), which returns null for it.
             const results = await this.ExecuteQuery(
-                "SELECT contact_id, uri FROM contacts WHERE account = ? AND uri != '' "
-                + "AND (uri NOT LIKE '%@%' OR uri LIKE '00%')",
+                "SELECT contact_id, uri, name FROM contacts WHERE account = ? AND uri != '' "
+                + "AND (uri NOT LIKE '%@%' OR uri LIKE '00%' OR uri LIKE '+%' OR uri LIKE '0%')",
                 [this.state.accountId]
             );
             const rows = results.rows;
             if (!rows || rows.length === 0) {
-                //console.log('migrateBarePhoneUris: no candidate rows found');
+                //console.log('healContactStore: no candidate rows found');
                 return;
             }
-            console.log('migrateBarePhoneUris: found', rows.length, 'candidate row(s)');
+            console.log('healContactStore: found', rows.length, 'candidate row(s)');
             for (let i = 0; i < rows.length; i++) {
                 const item = rows.item(i);
                 const oldUri = item.uri;
                 const id = item.contact_id;
-                const newUri = canonicalize(oldUri);
-                if (!newUri || newUri === oldUri) {
-                    // The "LIKE '00%'" pre-filter can catch local
-                    // parts that just happen to start with two zeros
-                    // but aren't phone numbers (e.g. a SIP username
-                    // "0042user@…"). canonicalize returns null for
-                    // those — skip without logging noise.
+                const oldName = item.name;
+                // The "LIKE '00%'" pre-filter can catch local parts that just
+                // happen to start with two zeros but aren't phone numbers
+                // (e.g. a SIP username "0042user@…"). canonicalize returns
+                // null for those, and null here means "the address is already
+                // right" -- not "skip the row", because the NAME may still be
+                // carrying the old spelling.
+                const newUri = canonicalize(oldUri) || oldUri;
+                const newName = repairName(oldName, oldUri, newUri);
+                if (newUri === oldUri && newName === null) {
                     continue;
                 }
-                console.log('migrateBarePhoneUris: candidate id=', id, 'oldUri=', oldUri, '→', newUri);
-                // Detect existing collision before we UPDATE.
-                const collisionRes = await this.ExecuteQuery(
+                if (newUri !== oldUri) {
+                    console.log('healContactStore: candidate id=', id, 'oldUri=', oldUri, '→', newUri);
+                }
+                if (newName !== null) {
+                    console.log('healContactStore: name', oldName, '→', newName,
+                        '(the name was the address, not a name)');
+                }
+                // Detect existing collision before we UPDATE. Only the address
+                // can collide; a name repair on its own always applies.
+                const collisionRes = newUri !== oldUri ? await this.ExecuteQuery(
                     'SELECT contact_id FROM contacts WHERE account = ? AND uri = ? AND contact_id != ?',
                     [this.state.accountId, newUri, id]
-                );
+                ) : { rows: null };
                 if (collisionRes.rows && collisionRes.rows.length > 0) {
                     const otherId = collisionRes.rows.item(0).contact_id;
-                    console.log('migrateBarePhoneUris: SKIP — another row already exists at',
+                    // Both spellings of one number exist as separate rows --
+                    // the damage this pass used to cause. Merging them means
+                    // choosing which contact_id survives and moving messages,
+                    // tags and the remote_id with it, so it stays a manual
+                    // decision rather than something a boot pass does silently.
+                    console.log('healContactStore: SKIP — another row already exists at',
                         newUri, 'with id', otherId,
                         '— resolve manually (kebab → Delete contact on whichever duplicate)');
                     continue;
                 }
+                const _appliedName = newName !== null ? newName : oldName;
                 await this.ExecuteQuery(
-                    'UPDATE contacts SET uri = ? WHERE account = ? AND contact_id = ?',
-                    [newUri, this.state.accountId, id]
+                    'UPDATE contacts SET uri = ?, name = ? WHERE account = ? AND contact_id = ?',
+                    [newUri, _appliedName, this.state.accountId, id]
                 ).then((res) => {
-                    console.log('migrateBarePhoneUris: UPDATEd', id, 'rowsAffected=', res.rowsAffected);
+                    console.log('healContactStore: UPDATEd', id, 'rowsAffected=', res.rowsAffected);
                     // Reflect the change in the in-memory list so
                     // the user doesn't have to restart the app to
                     // see the contact at its new URI.
                     this.setState(prevState => ({
                         allContacts: (prevState.allContacts || []).map(c =>
-                            c && c.id === id ? { ...c, uri: newUri } : c
+                            c && c.id === id ? { ...c, uri: newUri, name: _appliedName } : c
                         )
                     }));
                 }).catch((err) => {
-                    console.log('migrateBarePhoneUris: UPDATE error for', id, err && err.message);
+                    console.log('healContactStore: UPDATE error for', id, err && err.message);
                 });
             }
         } catch (e) {
-            console.log('migrateBarePhoneUris: SELECT error', e && e.message);
+            console.log('healContactStore: SELECT error', e && e.message);
+        }
+        utils.timestampedLog('[ab] [lifecycle] heal finished in '
+            + (Date.now() - _healStarted) + 'ms');
+
+        // Undo the 2026-09-09 over-adoption: rows whose NAME is the contact's
+        // own full address. Nothing in this app ever sets a name that way on
+        // purpose, so the shape is a reliable signature of that bug and of
+        // nothing else. Local-only and self-limiting -- once the name no longer
+        // contains an '@' it can never match again, and with the adopt-down
+        // rule now restricted to PSTN the server's raw echo will not come back
+        // down and re-apply it.
+        try { await this._abRepairAddressNames(); } catch (e) {
+            console.log('[ab] [name] address-name repair failed:', e && e.message);
+        }
+
+        // Names from the OS phonebook, once the server document has been
+        // fetched and applied. This is the LAST thing before the dump on
+        // purpose: adopting a name is a write, and it must land on top of the
+        // canonical addresses the migration and the heal just settled, never
+        // race them.
+        try { await this._abAdoptPhonebookNames(); } catch (e) {
+            console.log('[ab] [name] phonebook adoption failed:', e && e.message);
+        }
+        // The phonebook was read, or cannot be without asking: contact
+        // avatars may now finish their first sync with its photos.
+        this._abPhonebookChecked = true;
+        avatarStore.phonebookChanged();
+
+        // The adoption writes SQL from a setState callback, i.e. after this
+        // function's stack has already unwound. Give those saves a moment to
+        // land, or the dump below prints the names as they were BEFORE the
+        // phonebook was consulted and reads like the adoption never ran.
+        await new Promise(r => setTimeout(r, 2000));
+
+        // The state of the store the user actually asked about: what the local
+        // contacts table holds once the canonicalisation migration and the heal
+        // have both had their turn. Printed after the heal, not before, so what
+        // scrolls past is the settled truth rather than a snapshot of something
+        // still being repaired.
+        try { await this._abDumpContactStore('post-heal'); } catch (e) {
+            console.log('[ab] [dump] failed:', e && e.message);
+        }
+    }
+
+    // Repair contacts whose display name is their own address.
+    //
+    // Deliberately narrow: the name must CONTAIN an '@' and must match the
+    // contact's URI. A name that merely echoes the username -- 'harb' on
+    // harb@conference.sip2sip.info, 'king', '338318' -- is left exactly as
+    // it is. Those rows were not damaged, they are the app's own long-standing
+    // spelling, and rewriting them would republish a pile of conference rooms
+    // to every client for a cosmetic change nobody asked for.
+    async _abRepairAddressNames() {
+        const account = this.state.accountId;
+        if (!account) return;
+        let res;
+        try {
+            res = await this.ExecuteQuery(
+                "SELECT contact_id, uri, name FROM contacts WHERE account = ? "
+                + "AND name LIKE '%@%' AND uri LIKE '%@%'", [account]);
+        } catch (e) {
+            console.log('[ab] [name] repair SELECT error', e && e.message);
+            return;
+        }
+        const rows = res && res.rows;
+        if (!rows || !rows.length) return;
+
+        const _nz = (x) => this._abNormalizeUri(String(x || '').trim()).toLowerCase();
+        const _repaired = new Map();   // contact_id -> repaired name
+        for (let i = 0; i < rows.length; i++) {
+            const it = rows.item(i);
+            const uri = it.uri || '';
+            const name = it.name || '';
+            if (_nz(name) !== _nz(uri)) continue;          // a real name that happens to hold an '@'
+            const username = uri.split('@')[0];
+            if (!username) continue;
+            const wanted = utils.titleCase(username);
+            if (!wanted || wanted === name) continue;
+            try {
+                await this.ExecuteQuery(
+                    'UPDATE contacts SET name = ? WHERE account = ? AND contact_id = ?',
+                    [wanted, account, it.contact_id]);
+                _repaired.set(it.contact_id, wanted);
+                utils.timestampedLog('[ab] [name] repaired "' + name + '" -> "' + wanted
+                    + '" for ' + uri + ' (the name was the whole address)');
+            } catch (e) {
+                console.log('[ab] [name] repair UPDATE error for', it.contact_id, e && e.message);
+            }
+        }
+
+        // SQL is not what the list renders -- allContacts is, and it was loaded
+        // before this ran. Without this the repaired names would only appear
+        // after ANOTHER restart, which is exactly the kind of "it did not work"
+        // that sends someone restarting twice to check.
+        if (!_repaired.size) return;
+        this.setState(prev => {
+            const list = prev.allContacts;
+            if (!Array.isArray(list) || !list.length) return null;
+            let touched = 0;
+            const next = list.map(c => {
+                if (!c || !_repaired.has(c.id)) return c;
+                touched = touched + 1;
+                return { ...c, name: _repaired.get(c.id) };
+            });
+            return touched ? { allContacts: next } : null;
+        }, () => {
+            if (typeof this.buildContactIndex === 'function') this.buildContactIndex();
+        });
+    }
+
+    // Read the OS phonebook and let it name the contacts that have no name of
+    // their own. Startup only, once, after the addressbook is stable.
+    //
+    // Until now the phonebook was read ONLY on user intent -- opening the
+    // Phonebook tab, the unified search, or the conference invite picker --
+    // because reading it is what triggers the OS permission prompt and that
+    // prompt belongs on a tap, not on a cold launch. The adoption was then
+    // bolted onto the photo pass that runs off the addresBookLoaded edge. A
+    // launch where the user never opened any of those three screens therefore
+    // never read the phonebook at all, and nothing was ever adopted.
+    //
+    // The fix keeps the prompt on user intent and drops only the reading: if
+    // permission is ALREADY granted we may read silently, because the user
+    // granted it for exactly this. If it is not granted we do nothing at all
+    // -- no prompt, no banner -- and the next Phonebook tap picks the work up.
+    async _abAdoptPhonebookNames() {
+        // A denial the user already gave is final for this launch. Not even
+        // checkPermission() is worth calling: the answer is known, and healing
+        // must never be the thing that goes near the phonebook after the user
+        // has said no.
+        if (this.state.abPermissionDenied) {
+            utils.timestampedLog('[ab] [name] phonebook access was declined \u2014 '
+                + 'no names adopted, and healing will not ask');
+            return;
+        }
+        if (this._abPhonebookRead) {
+            // Genuinely read this launch; the map is live, so just re-run the
+            // pass over the contacts the server snapshot has since brought in.
+            this._abApplyPhotosToContacts();
+            return;
+        }
+        let permission;
+        try {
+            permission = await Contacts.checkPermission();
+        } catch (e) {
+            utils.timestampedLog('[ab] [name] cannot read the phonebook:', e && e.message);
+            return;
+        }
+        // checkPermission() only ASKS the OS what it already decided -- it
+        // never shows a dialog. The dialog lives in requestContactsPermission()
+        // / Contacts.requestPermission(), which the startup path deliberately
+        // does not call: a permission prompt belongs on a Phonebook tap, and a
+        // background repair is not the user asking for anything.
+        if (permission !== 'authorized') {
+            utils.timestampedLog('[ab] [name] phonebook not readable (permission='
+                + permission + ') \u2014 no names adopted; the first Phonebook tap '
+                + 'will ask and pick this up');
+            return;
+        }
+        const _t0 = Date.now();
+        await this.getABContacts();
+        utils.timestampedLog('[ab] [name] phonebook read in ' + (Date.now() - _t0)
+            + 'ms — ' + Object.keys(this.state.avatarNames || {}).length
+            + ' name key(s) available for adoption');
+        this._abApplyPhotosToContacts();
+    }
+
+    // Dump every local contact row for the current account.
+    //
+    // Reads SQL rather than this.state.allContacts on purpose: the store is
+    // what survives the restart and what replicates to the server, and a row
+    // that never made it into memory (filtered out, arrived late) is exactly
+    // the row worth seeing. Once per run per account -- this is a diagnostic,
+    // not a heartbeat.
+    async _abDumpContactStore(source = 'startup') {
+        const account = this.state.accountId;
+        if (!account) return;
+        if (!this._abStoreDumped) this._abStoreDumped = new Set();
+        const _key = account + '|' + source;
+        if (this._abStoreDumped.has(_key)) return;
+        this._abStoreDumped.add(_key);
+
+        let res;
+        try {
+            res = await this.ExecuteQuery(
+                "SELECT contact_id, remote_id, uri, uris, name, tags, organization, email, "
+                + "public_key, timestamp FROM contacts WHERE account = ? ORDER BY uri COLLATE NOCASE",
+                [account]);
+        } catch (e) {
+            console.log('[ab] [dump] SELECT error', e && e.message);
+            return;
+        }
+        const rows = res && res.rows;
+        const n = rows ? rows.length : 0;
+        utils.timestampedLog('[ab] [dump] ' + n + ' local contact(s) for ' + account
+            + ' after ' + source + ':');
+
+        for (let i = 0; i < n; i++) {
+            const it = rows.item(i);
+            const uri = it.uri || '';
+            const name = it.name || '';
+            const bits = [];
+
+            // A name that only echoes the address is not a name -- flag it, so
+            // the rows still waiting for a phonebook or a server display name
+            // are visible at a glance instead of looking like they have one.
+            if (!name) bits.push('name=<none>');
+            else if (this._abNameIsEcho && this._abNameIsEcho(name, uri)) bits.push('name="' + name + '" (echo)');
+            else bits.push('name="' + name + '"');
+
+            bits.push('id=' + (it.contact_id || '?'));
+            // No remote_id means this row has never been replicated: it exists
+            // on this device only, and no other client can see it.
+            bits.push(it.remote_id ? 'remote=' + it.remote_id : 'remote=<local-only>');
+
+            // The extra addresses the contact carries beyond its default one.
+            // A duplicate inside this list is the §16.1 case the heal removes,
+            // so it is worth printing even when it is empty.
+            // The column is a COMMA-SEPARATED STRING, not JSON: every writer
+            // reaches it through contact.uris.toString() and every reader
+            // through String(row.uris).split(','). Parsing it as JSON made
+            // every populated row print '<unparseable>', which said more about
+            // the dump than about the data.
+            const extra = String(it.uris || '')
+                .split(',')
+                .map(u => u.trim())
+                .filter(u => u && u.toLowerCase() !== uri.toLowerCase());
+            if (extra.length) {
+                // A repeat inside this list is the §16.1 duplicate the heal is
+                // supposed to remove, so it is worth calling out rather than
+                // quietly printing the address twice.
+                const seen = new Set();
+                const dupes = extra.filter(u => {
+                    const k = u.toLowerCase();
+                    if (seen.has(k)) return true;
+                    seen.add(k);
+                    return false;
+                });
+                bits.push('uris=[' + extra.join(', ') + ']'
+                    + (dupes.length ? ' DUPLICATE(' + dupes.join(', ') + ')' : ''));
+            }
+
+            const tags = (it.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+            if (tags.length) bits.push('tags=[' + tags.join(',') + ']');
+            if (it.organization) bits.push('org="' + it.organization + '"');
+            if (it.email) bits.push('email=' + it.email);
+            if (it.public_key) bits.push('key=yes');
+
+            utils.timestampedLog('[ab] [dump]     ' + (uri || '<no uri>') + '  ' + bits.join(' '));
         }
     }
 
@@ -5401,6 +6260,10 @@ class Sylk extends Component {
 	     if (this.wiping) {
 			 return;
 	     }
+
+	     // Contact avatars follow the account, its XCAP capability and its
+	     // server (cheap: a key compare unless one of them changed).
+	     this._avatarBindAccount();
 
 	     // Anchor the native in-conference clear on "no current call".
 	     // The flag is SET explicitly in outgoingConference (where we
@@ -5921,7 +6784,21 @@ class Sylk extends Component {
     async addChatContacts() {
 		let chatContacts = await this.getChatContacts();
 
+		// Tombstoned contacts (deleted = 1) are not loaded into memory, so
+		// lookupContact misses them; a conversation whose messages were not
+		// hidden would otherwise be "re-created" here on every launch,
+		// overwriting the tombstone row and pushing it to the server.
+		const tombstoned = new Set();
+		try {
+			const res = await this.ExecuteQuery(
+				'SELECT lower(uri) AS u FROM contacts WHERE account = ? AND deleted = 1', [this.state.accountId]);
+			for (let i = 0; i < res.rows.length; i++) {
+				if (res.rows.item(i).u) tombstoned.add(res.rows.item(i).u);
+			}
+		} catch (e) { /* no list: the save path below still refuses tombstones */ }
+
 		Object.keys(chatContacts).forEach((key) => {
+		      if (tombstoned.has(String(key).toLowerCase())) return;
 		      let chatContact = this.lookupContact(key);
 			  if (!chatContact) {
 					chatContact = this.newContact(key, key, {src: 'chatContacts'});
@@ -8312,7 +9189,7 @@ class Sylk extends Component {
                 console.log('Reconnecting call to', target_uri, 'with options', options);
 
                 setTimeout(() => {
-                    if (target_uri.indexOf('@videoconference') > -1) {
+                    if (this._abIsConferenceUri(target_uri)) {
                         this.callKeepStartConference(target_uri, options);
                     } else {
                         this.callKeepStartCall(target_uri, options);
@@ -8567,6 +9444,11 @@ class Sylk extends Component {
 		// "componentWillUnmount has fired" and the boot-time guards
 		// behave correctly.
 		this.unmounted = true;
+
+		if (this._avatarRetryTimer) {
+			clearInterval(this._avatarRetryTimer);
+			this._avatarRetryTimer = null;
+		}
 
 		// Drop the iOS auto-answer relay subscription (see componentDidMount).
 		try {
@@ -9215,17 +10097,9 @@ class Sylk extends Component {
                 return false;
             }
 
-            // Conference CDRs arrive on the SIP-bridge domain
-            // (room@conference.X). Map them to the local videoconference.X
-            // form (the client convention, same swap the addressbook import
-            // uses) so they CREATE/UPDATE the local conference-room contact
-            // instead of being dropped. Conference rooms are local-only —
-            // the matching XCAP @conference entry is created server-side on
-            // join, so we only ever build the local @videoconference contact
-            // here. (Non-default conference domains pass through unchanged.)
-            if (elem.remoteParty.indexOf('@conference.') > -1) {
-                elem.remoteParty = this._abMangleConferenceDomainFromServer(elem.remoteParty.toLowerCase());
-            }
+            // Conference CDRs arrive as room@conference.X, the same spelling
+            // the local conference-room contact uses, so they CREATE/UPDATE it
+            // directly.
 
             elem.uri = elem.remoteParty.toLowerCase();
             const uri_els = elem.uri.split('@');
@@ -9253,7 +10127,7 @@ class Sylk extends Component {
 
             elem.name = elem.displayName || elem.uri;
 
-            if (elem.remoteParty.indexOf('@videoconference.') > -1) {
+            if (this._abIsConferenceUri(elem.remoteParty)) {
                 elem.conference = true;
                 elem.media = ['audio', 'video', 'chat'];
             }
@@ -9445,10 +10319,9 @@ class Sylk extends Component {
             const callid = elem && elem.sessionId;
             if (!callid || typeof callid !== 'string') continue;
 
-            // Skip conference / videoconference rooms — not contacts.
+            // Skip conference rooms — not contacts.
             const remoteParty = elem.remoteParty || '';
-            if (remoteParty.indexOf('@conference.') > -1
-                || remoteParty.indexOf('@videoconference.') > -1) {
+            if (utils.isConferenceUri(remoteParty, this.state.defaultConferenceDomain)) {
                 continue;
             }
 
@@ -9795,8 +10668,7 @@ class Sylk extends Component {
             if (!callid) continue;
 
             const remoteParty = e.remoteParty || '';
-            if (remoteParty.indexOf('@conference.') > -1
-                || remoteParty.indexOf('@videoconference.') > -1) {
+            if (utils.isConferenceUri(remoteParty, this.state.defaultConferenceDomain)) {
                 continue;
             }
 
@@ -9832,8 +10704,14 @@ class Sylk extends Component {
                 ? momenttz.tz(e.startTime instanceof Date ? e.startTime : String(e.startTime), String(e.timezone))
                 : null;
             const callDate = (callMoment && callMoment.isValid()) ? callMoment.toDate() : null;
+            // .local(): the SAME instant, read on THIS device's clock.
+            // momenttz.tz() put the moment in the call's timezone -- the one
+            // the server keeps for the account -- so formatting it directly
+            // showed a call made at 09:33 in Montevideo as 14:33, because
+            // that is what the clock said in Amsterdam. The phone travels;
+            // the server's timezone is not the user's.
             const timePrefix = (callMoment && callMoment.isValid())
-                ? (callMoment.format('HH:mm:ss') + ' - ') : '';
+                ? (callMoment.clone().local().format('HH:mm:ss') + ' - ') : '';
             const label = timePrefix + (missed
                 ? 'Missed call'
                 : ((direction === 'incoming' ? 'Incoming call' : 'Outgoing call')
@@ -9903,8 +10781,8 @@ class Sylk extends Component {
                     // rewritten + logged on each app start. Skip the UPDATE when
                     // the row already carries exactly this metadata and content —
                     // nothing would change, so there's no work to do.
-                    const _newMetadata = JSON.stringify(metadata);
                     const _oldMetadata = String(existing.rows.item(0).metadata || '');
+                    const _newMetadata = JSON.stringify(this._keepCdrMetadata(_oldMetadata, metadata));
                     if (_oldMetadata === _newMetadata && _oldContent === _newContent) {
                         continue;
                     }
@@ -9999,6 +10877,268 @@ class Sylk extends Component {
                     await this.saveSystemMessage(uri, label, direction, missed, 1, metadata, String(callid), callDate);
                 }
             }
+        }
+    }
+
+    // Tell this account's other devices about a call this one handled.
+    //
+    // The mirror of _handleCallDetailRecord. Sent to our own address, so the
+    // server routes it to every other registered device and journals it for
+    // the ones that are offline.
+    //
+    // WHAT is published follows from who knows what. An outgoing call goes
+    // out whatever became of it -- no other device knows it happened at all.
+    // An incoming call goes out only when THIS device answered: a device
+    // that merely rang knows nothing the others do not, and the missed calls
+    // it would report are the server's to report later.
+    // {codecs, userAgents} for a call's `local` block, or null when there is
+    // nothing to say. codecs: {audio: {name, sampleRate}, video: {name}} as
+    // negotiated; userAgents: this build and the peer's client.
+    _callRecordLocalExtras(call) {
+        const extras = {};
+        try {
+            const codecs = call && call._cdrCodecs;
+            if (codecs && typeof codecs === 'object' && Object.keys(codecs).length) {
+                extras.codecs = codecs;
+            }
+            const userAgents = {local: String(USER_AGENT || '')};
+            const remote = call && call._cdrRemoteUserAgent;
+            if (remote) {
+                userAgents.remote = String(remote);
+            }
+            Object.keys(userAgents).forEach(k => { if (!userAgents[k]) delete userAgents[k]; });
+            if (Object.keys(userAgents).length) {
+                extras.userAgents = userAgents;
+            }
+        } catch (e) {
+            utils.timestampedLog('[cdr] cannot collect codecs / user agents:', e && e.message);
+        }
+        return Object.keys(extras).length ? extras : null;
+    }
+
+    // The codecs / userAgents a call record's `local` block carries, in the
+    // shape stored under messages.metadata.cdr. null when it has neither.
+    _cdrMetadataFromRecord(record) {
+        const local = (record && typeof record.local === 'object' && record.local) || {};
+        const cdr = {};
+        if (local.codecs && typeof local.codecs === 'object') {
+            cdr.codecs = local.codecs;
+        }
+        if (local.userAgents && typeof local.userAgents === 'object') {
+            cdr.userAgents = local.userAgents;
+        }
+        return Object.keys(cdr).length ? cdr : null;
+    }
+
+    // Carry metadata.cdr from a row's current metadata into the metadata about
+    // to replace it. The server's view of a call knows the trace but not the
+    // codecs or clients, so a sync that rewrote metadata wholesale would
+    // erase what the device recorded.
+    _keepCdrMetadata(oldMetadataJson, metadata) {
+        try {
+            const old = oldMetadataJson ? JSON.parse(oldMetadataJson) : null;
+            if (old && old.cdr && metadata && !metadata.cdr) {
+                return Object.assign({}, metadata, {cdr: old.cdr});
+            }
+        } catch (e) {
+            // Unreadable old metadata has nothing worth keeping.
+        }
+        return metadata;
+    }
+
+    _publishCallRecord(opts) {
+        try {
+            const account = this.state.account;
+            const callid = opts.callId ? String(opts.callId) : null;
+            if (!account || !callid || !opts.uri) {
+                return;
+            }
+
+            const direction = opts.direction === 'outgoing' ? 'outgoing' : 'incoming';
+            const duration = Math.max(0, parseInt(opts.duration, 10) || 0);
+            if (direction === 'incoming' && duration <= 0) {
+                return;
+            }
+
+            // Outcome from what this device can actually see. A call with
+            // airtime completed; one without did not. Whether it failed or
+            // was cancelled needs the SIP status, which is not reliably here
+            // -- the server reports the same call later and outranks this
+            // record, so a call that failed corrects itself.
+            const outcome = duration > 0
+                ? 'completed'
+                : (direction === 'outgoing' ? 'cancelled' : 'missed');
+
+            const streams = String(opts.mediaType || 'audio')
+                .split(',').map(s => s.trim()).filter(s => s);
+
+            const record = {
+                version: 1,
+                sessionId: callid,
+                direction: direction,
+                outcome: outcome,
+                duration: duration,
+                remoteParty: String(opts.uri),
+                source: 'local',
+                media: streams.length ? streams : ['audio'],
+                local: Object.assign({
+                    streams: streams.length ? streams : ['audio'],
+                    deviceId: String(this.deviceId || ''),
+                }, opts.extras || {}),
+            };
+            if (opts.startTime) {
+                const start = moment(opts.startTime);
+                if (start.isValid()) {
+                    record.startTime = start.toISOString();
+                    record.stopTime = start.clone().add(duration, 'seconds').toISOString();
+                }
+            }
+            if (opts.reason) {
+                record.reason = String(opts.reason);
+            }
+            // Which device took it. Every other device rang and did not, and
+            // reads the same record as answered elsewhere because of this.
+            if (direction === 'incoming') {
+                record.answeredBy = String(this.deviceId || '');
+            }
+
+            account.sendMessage(account.id, JSON.stringify(record),
+                                'application/blink-call-detail-record');
+            utils.timestampedLog('[cdr] published', direction, outcome, 'call', callid,
+                                 'to the other devices');
+        } catch (e) {
+            // A call that is stored but not replicated is a smaller problem
+            // than a call teardown that threw.
+            utils.timestampedLog('[cdr] cannot publish call record:', e && e.message);
+        }
+    }
+
+    // ===== application/blink-call-detail-record ============================
+    //
+    // A call detail record published by one of this account's OTHER devices.
+    // Blink desktop sends one for every call it places, and for an incoming
+    // call it answered -- see blink/docs/CALL-DETAIL-RECORD.md. It is a
+    // signal, not a chat message: without this it lands in the self
+    // conversation as "Unknown message received application/blink-...".
+    //
+    // It converges on the same (account, call_id) row the server call
+    // history uses, so a call this device already knows about is enriched
+    // rather than duplicated, and a call this device never saw -- one placed
+    // from the desktop -- is inserted. The server reports it again later
+    // anyway; this is the same fact arriving sooner.
+    async _handleCallDetailRecord(message) {
+        // Self only. A record from anyone else is a stranger writing into
+        // this user's call history.
+        const sender = message && message.sender && message.sender.uri;
+        if (sender && sender !== this.state.accountId) {
+            utils.timestampedLog('[cdr] ignoring a call record from', sender);
+            return;
+        }
+
+        let record = null;
+        try {
+            record = JSON.parse(message.content);
+        } catch (e) {
+            record = null;
+        }
+        if (!record || !record.sessionId) {
+            utils.timestampedLog('[cdr] ignoring an unreadable call record');
+            return;
+        }
+
+        // Our own publish, forked back to us by the server.
+        const origin = record.local && record.local.deviceId;
+        if (origin && String(origin) === String(this.deviceId)) {
+            return;
+        }
+
+        const callid = String(record.sessionId);
+        const direction = record.direction === 'outgoing' ? 'outgoing' : 'incoming';
+        const outcome = String(record.outcome || '');
+        const missed = direction === 'incoming'
+            && ['missed', 'voicemail', 'rejected'].indexOf(outcome) > -1;
+
+        let uri = String(record.remoteParty || '');
+        if (!uri) {
+            return;
+        }
+        uri = utils.normalizeAnonymousUri(uri.toLowerCase());
+
+        // Known contacts only -- the same gate saveCallSystemMessages
+        // applies. A call with someone not in the address book has no
+        // conversation to put a breadcrumb in.
+        if (typeof this.lookupContact === 'function' && !this.lookupContact(uri)) {
+            return;
+        }
+
+        // The record's startTime is ISO-8601 with an offset, so moment
+        // reads the instant and .local() renders it on this device's clock.
+        const callMoment = record.startTime ? moment(String(record.startTime)) : null;
+        const callDate = (callMoment && callMoment.isValid()) ? callMoment.toDate() : null;
+        const timePrefix = (callMoment && callMoment.isValid())
+            ? (callMoment.clone().local().format('HH:mm:ss') + ' - ') : '';
+        const dur = this._formatCallDuration(record.duration);
+
+        // The record is one fact about the call and reads the same on every
+        // device; which device is reading it is what makes it "elsewhere".
+        const answeredBy = String(record.answeredBy || '');
+        const elsewhere = answeredBy && answeredBy !== String(this.deviceId);
+
+        let text;
+        if (missed) {
+            text = 'Missed call';
+        } else if (direction === 'incoming' && elsewhere) {
+            text = 'Answered on another device';
+        } else {
+            text = direction === 'incoming' ? 'Incoming call' : 'Outgoing call';
+        }
+        const label = timePrefix + text + (dur ? ' (' + dur + ')' : '');
+
+        const metadata = {
+            trace: {
+                callid:  callid,
+                fromtag: record.fromTag != null ? String(record.fromTag) : '',
+                totag:   record.toTag   != null ? String(record.toTag)   : '',
+                proxyIP: record.proxyIP != null ? String(record.proxyIP) : '',
+            },
+        };
+        const cdr = this._cdrMetadataFromRecord(record);
+        if (cdr) {
+            metadata.cdr = cdr;
+        }
+
+        let existing = null;
+        try {
+            existing = await this.ExecuteQuery(
+                "SELECT msg_id, metadata FROM messages WHERE account = ? AND call_id = ? LIMIT 1",
+                [this.state.accountId, callid]
+            );
+        } catch (err) {
+            utils.timestampedLog('[cdr] converge lookup failed for', callid,
+                                 '-', err && err.message);
+        }
+
+        try {
+            if (existing && existing.rows && existing.rows.length > 0) {
+                const msgId = existing.rows.item(0).msg_id;
+                const merged = this._keepCdrMetadata(
+                    String(existing.rows.item(0).metadata || ''), metadata);
+                await this.ExecuteQuery(
+                    "UPDATE messages SET content = ?, metadata = ? WHERE account = ? AND call_id = ?",
+                    [label, JSON.stringify(merged), this.state.accountId, callid]
+                );
+                this._enrichInMemoryCallMessage(uri, callid, metadata, label, msgId);
+                utils.timestampedLog('[cdr] merged', direction, outcome, 'call', callid,
+                                     'from another device');
+            } else {
+                await this.saveSystemMessage(uri, label, direction, missed, 1,
+                                             metadata, callid, callDate);
+                utils.timestampedLog('[cdr] stored', direction, outcome, 'call', callid,
+                                     'from another device');
+            }
+        } catch (err) {
+            utils.timestampedLog('[cdr] cannot store call record', callid,
+                                 '-', err && err.message);
         }
     }
 
@@ -11326,6 +12466,8 @@ class Sylk extends Component {
 	}
 
     async componentDidMount() {
+        this._initAvatarStore();
+
         // iOS auto-answer signal.
         //
         // On Android an automatic accept arrives as `autoAnswered` on the
@@ -14123,6 +15265,15 @@ class Sylk extends Component {
             // from componentDidUpdate as soon as allContacts is touched
             // by the post-resume journal sync) will perform the sweep.
             this._orphanReconcileDoneThisForeground = false;
+            // iOS: re-arm the once-per-foreground absolute badge sync and
+            // run it now — resume alone may not touch allContacts, so
+            // componentDidUpdate wouldn't call updateTotalUnread.
+            this._iosBadgeSyncedThisForeground = false;
+            if (Platform.OS === 'ios') {
+                setTimeout(() => {
+                    try { this.updateTotalUnread(); } catch (e) { /* noop */ }
+                }, 0);
+            }
             // Re-evaluate orientation and isTablet on every foreground
             // transition. Why this matters: if the user folded /
             // unfolded the device while the app was in the background
@@ -14370,7 +15521,7 @@ class Sylk extends Component {
             return;
         }
         let callUUID = data.callUUID || uuid.v4();
-        let is_conf = data.handle.search('videoconference.') === -1 ? false: true;
+        let is_conf = this._abIsConferenceUri(data.handle);
 
         // No callUUID means this is not our own outgoing call coming back
         // to us — it is an iOS INStartCallIntent: the user tapped Blink on
@@ -14426,7 +15577,10 @@ class Sylk extends Component {
     async createChatContact(uri) {
         console.log('createChatContact', uri);
 
-		if (uri.indexOf('@') === -1) {
+		// A phone number stays bare: it is how the contact is stored (R4) and
+		// lookupContact already matches a bare row from either spelling, so
+		// qualifying here only minted a second, domained contact to chat with.
+		if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
 			uri = uri + '@' + this.state.defaultDomain;
 		}
 
@@ -14456,13 +15610,17 @@ class Sylk extends Component {
     selectContact(contact, origin='') {
         //console.log('selectContact', contact);
 
-        // DEBUG: log the contact's unread message-id queue at select time so
-        // we can see exactly what the badge count is derived from (and
-        // whether it clears on open).
+        // What the badge count is derived from, and whether it clears on open.
+        // Only when there is something to say: deselecting logs a contact of
+        // null with an empty queue, and the screen does that on every route
+        // change, so the interesting lines were buried under dozens of
+        // '[unread] selectContact null — unread ids (0): []'.
         try {
             const _u = (contact && Array.isArray(contact.unread)) ? contact.unread : [];
-            utils.timestampedLog('[unread] selectContact', contact && contact.uri,
-                '— unread ids (' + _u.length + '):', JSON.stringify(_u));
+            if (contact && _u.length) {
+                utils.timestampedLog('[unread] selectContact', contact.uri,
+                    '— unread ids (' + _u.length + '):', JSON.stringify(_u));
+            }
         } catch (e) { /* noop */ }
 
         // Clear the unread queue unconditionally on select. confirmRead (the
@@ -14913,6 +16071,11 @@ class Sylk extends Component {
             // XCAP writes deferred while unauthenticated (see _abWritesReady)
             // are re-issued now that the account is registered.
             if (this._abMaybeRun) this._abMaybeRun('registered');
+
+            // Contact avatars: storage changes sent while we were away are
+            // not journalled, so re-list (at most every 10 minutes, never
+            // before the first settle).
+            avatarStore.onRegistered();
 
             // Switch completed successfully — drop the guard that was
             // keeping loadAccounts from routing to /login while the
@@ -18398,6 +19561,13 @@ class Sylk extends Component {
                 // callUUID (call.id). Stamp the call-ended message with
                 // it so the server-history sync converges onto this row.
                 const _deferredSipCallId = (call && (call._callId || call.callId)) || null;
+                // The call's own start, so the record carries when it
+                // happened rather than when the teardown ran.
+                const _deferredStartTime = startTime || null;
+                // Codecs and the peer's User-Agent, stamped on the call by
+                // Call.js while it was up (local.codecs / local.userAgents
+                // in the call detail record).
+                const _deferredCdr = this._callRecordLocalExtras(call);
                 _termMark('before-scheduling-deferred');
                 InteractionManager.runAfterInteractions(() => {
                     _termMark('deferred:start');
@@ -18452,13 +19622,27 @@ class Sylk extends Component {
                                 _deferredUri, 'call_id=', _deferredSipCallId,
                                 'text=', JSON.stringify(_deferredMsg));
                         }
-                        this.saveSystemMessage(_deferredUri, _deferredMsg, _deferredDirection, _deferredMissed, 1, null, _deferredSipCallId);
+                        this.saveSystemMessage(_deferredUri, _deferredMsg, _deferredDirection, _deferredMissed, 1,
+                                               _deferredCdr ? {cdr: _deferredCdr} : null, _deferredSipCallId);
                         _termMark('deferred:saveSystemMessage');
                     } else if (_deferredIsAnon) {
                         utils.timestampedLog('[call] [anon-history]', _deferredCallUUID,
                             'NO call-ended system message inserted for anonymous caller',
                             _deferredUri, '(empty msg)');
                     }
+                    // Tell the other devices. Outgoing always, incoming only
+                    // when this device answered -- see _publishCallRecord.
+                    this._publishCallRecord({
+                        callId: _deferredSipCallId,
+                        uri: _deferredUri,
+                        direction: _deferredDirection,
+                        duration: _deferredDiff,
+                        mediaType: _terminatedMediaType,
+                        startTime: _deferredStartTime,
+                        extras: _deferredCdr,
+                    });
+                    _termMark('deferred:publishCallRecord');
+
                     this.updateHistoryEntry(_deferredUri, _deferredCallUUID, _deferredDiff, _terminatedMediaType, _deferredDirection);
                     _termMark('deferred:updateHistoryEntry');
                     this.requestDisplayOverOtherAppsPermission();
@@ -18685,13 +19869,19 @@ class Sylk extends Component {
                 if (!chatContact) {
                     chatContact = this.newContact(uri, name, {src: 'callreturn'});
                 }
-                // Tag with 'calls' so the contact appears in the
-                // calls-filtered view of the contact list, matching
-                // what updateHistoryEntry does at call end.
-                if (chatContact.tags && chatContact.tags.indexOf('calls') === -1) {
-                    chatContact.tags.push('calls');
+                // newContact() returns null when sanitizeContact() rejects
+                // the URI (not a SIP address / number / UUID / conference
+                // URL, e.g. free text dialed as targetUri). Nothing to
+                // persist then — just go home.
+                if (chatContact) {
+                    // Tag with 'calls' so the contact appears in the
+                    // calls-filtered view of the contact list, matching
+                    // what updateHistoryEntry does at call end.
+                    if (chatContact.tags && chatContact.tags.indexOf('calls') === -1) {
+                        chatContact.tags.push('calls');
+                    }
+                    this.saveSylkContact(uri, chatContact, 'callreturn');
                 }
-                this.saveSylkContact(uri, chatContact, 'callreturn');
             }
         }
 
@@ -19387,6 +20577,8 @@ class Sylk extends Component {
                 try {
                     const ab = this.state.connection && this.state.connection.addressbook;
                     if (ab && typeof ab.on === 'function') {
+                        this._abInstallOriginStamping(ab);
+                        if (this.state.addressBookServer) this._avatarAttach(ab);
                         ab.removeListener('dataLoaded', this._abOnDataLoaded);
                         ab.removeListener('dataCacheLoaded', this._abOnDataCacheLoaded);
                         ab.removeListener('dataUpdated', this._abOnDataUpdated);
@@ -23246,7 +24438,7 @@ class Sylk extends Component {
 					displayName = url_parts[7];
 					mediaType   = url_parts[8] || 'audio';
 
-					if (event !== 'cancel' && from && from.search('@videoconference.') > -1) {
+					if (event !== 'cancel' && from && this._abIsConferenceUri(from)) {
 						event = 'conference';
 						to = from;
 					}
@@ -23627,17 +24819,6 @@ class Sylk extends Component {
 			return;
 		}
 
-		// Normalize the SIP focus-bridge domain to the video-conference domain
-		// so a bridged room message pushed via FCM/APNs files under the same
-		// conversation as the video room (see _mangleConferenceBridgeUri).
-		try {
-			const _mangled = this._mangleConferenceBridgeUri(from);
-			if (_mangled !== from) {
-				console.log('[message] mangle conference bridge sender (push)', from, '->', _mangled);
-				from = _mangled;
-			}
-		} catch (e) {}
-
 		if (this.uploadedFiles.has(id)) {
 			return;
 		}
@@ -23649,6 +24830,11 @@ class Sylk extends Component {
 		// handles them; the push copy can be dropped silently.
 		if (contentType === ZRTP_CONTENT_TYPE) {
 			console.log('-- Incoming push is ZRTP handshake, dropping', id);
+			return;
+		}
+
+		// Account storage control messages are never notified.
+		if (acctStorage.isControlType(contentType)) {
 			return;
 		}
 
@@ -24929,6 +26115,22 @@ class Sylk extends Component {
             return;
         }
 
+        // From here on the CANONICAL uri is the only one used.
+        //
+        // sanitizeContact puts a phone number in bare form (R4: stored without
+        // a domain, which is also what the XCAP document holds) and writes it
+        // to contact.uri -- but everything below went on using the raw `uri`
+        // ARGUMENT: the native display-name map, the URI-dedup guard, and
+        // _buildContactInsertParams. So a contact reached from a wire path was
+        // INSERTed as "+3180081867@sylk.link" while state.allContacts held it
+        // bare, and the same contact came out bare or domained depending on
+        // whether the save took the INSERT or the UPDATE branch. The dedup
+        // guard, binding the raw value, then could not see the bare row it was
+        // supposed to adopt -- which is how one number ends up as two rows.
+        if (contact.uri && contact.uri !== uri) {
+            uri = contact.uri;
+        }
+
         // Keep the iOS notification-extension display-name map in step
         // with every contact create/edit (covers both the INSERT path
         // below and the UNIQUE-constraint fallback to updateSylkContact).
@@ -25138,9 +26340,14 @@ class Sylk extends Component {
                 }
             }
 
-        }).catch((error) => {
+        }).catch(async (error) => {
             if (error.message.indexOf('UNIQUE constraint failed') > -1) {
                 //console.log('SQL insert contact failed, try update', uri, contact.timestamp, 'origin=' + origin);
+                if (await this._isTombstoneId(contact.id)) {
+                    console.log('SQL insert contact', uri, 'hit a tombstone row', contact.id,
+                        '- not overwriting (origin=' + origin + ')');
+                    return;
+                }
                 this.updateSylkContact(contact, origin);
             } else {
                 console.error('SQL insert contact', uri, 'error:', error);
@@ -25500,15 +26707,22 @@ class Sylk extends Component {
 				}
 				if (rid) {
 					await this._abExec('deleteContact ' + rid + ' (' + contact.uri + ')',
-						cb => ab.deleteContact(rid, cb));
+						cb => ab.deleteContact(rid, cb), { kind: 'contact', id: rid });
 					_serverDeleted = 'yes';
+					// Its stored picture goes too (best effort; the avatar GC
+					// collects it otherwise).
+					try { avatarStore.expunge(rid, contact.id); } catch (e) { /* never */ }
 					// Any group whose only member was this contact is now empty.
 					for (const g of (ab.groups || [])) {
 						if (this._abIsPurgeGroup(g.name)) continue;
 						const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
 						if (members.some(m => m.id === rid) && members.filter(m => m.id !== rid).length === 0) {
+							if (this._abGroupIsShared(g)) {
+								utils.timestampedLog('[ab] [heal] KEEP empty server group "' + this._abCapitalizeGroup(g.name) + '" id=' + g.id + ' kind="' + this._abGroupKind(g) + '" -- cross-client group, emptying it here is not a reason to delete it');
+								continue;
+							}
 							await this._abExec('deleteGroup ' + g.name + ' (emptied by contact delete)',
-								cb => ab.deleteGroup(g.id, cb));
+								cb => ab.deleteGroup(g.id, cb), { kind: 'group', id: g.id });
 						}
 					}
 				} else {
@@ -26393,6 +27607,26 @@ class Sylk extends Component {
     // to the peer in the CPIM envelope). It is NOT encrypted, so only ever
     // pass the cleartext part of a payload. An object is serialized by
     // sylkrtc; a string is passed through; null/undefined omits the field.
+    // THE WIRE BOUNDARY for a stored URI.
+    //
+    // A phone contact is stored BARE -- "+3180081867", no domain (R4 in
+    // docs/addressbook/addressbook.md, and what the XCAP document holds:
+    // uri="%2B3180081867" type="tel"). A SIP request needs a routable AOR, so
+    // the domain goes on HERE, at the one place every outgoing message passes
+    // through, instead of being baked into what we store. Dialling already
+    // works this way (callKeepStartCall, CallManager.startCall); messaging did
+    // not, which is the only reason storing bare was unsafe.
+    //
+    // Anything already carrying an @ is left exactly as it is.
+    _wireUri = (uri) => {
+        const _uri = (uri || '').trim();
+        if (!_uri || _uri.indexOf('@') > -1) return _uri;
+        const _domain = this.state.defaultDomain
+            || (this.state.accountId && this.state.accountId.indexOf('@') > -1
+                ? this.state.accountId.split('@')[1] : null);
+        return _domain ? (_uri + '@' + _domain) : _uri;
+    };
+
     _sendMessage(uri, text, id, contentType, timestamp, skipJournal=false, skipDisposition=false, metadata=null) {
         // Surface the location-sharing action so a meet stream is legible in the
         // log (meeting_request vs meeting_update vs meeting_end vs meeting_reject).
@@ -26498,7 +27732,7 @@ class Sylk extends Component {
             // wins — this only fills the slot when nobody set it.
             _sendOpts.metadata = _locMeta;
         }
-        let message = this.state.account.sendMessage(uri, text, contentType, _sendOpts, (error) => {
+        let message = this.state.account.sendMessage(this._wireUri(uri), text, contentType, _sendOpts, (error) => {
             if (error) {
                 console.log('Message', id, 'sending error:', error);
                 this.outgoingMessageStateChanged(id, 'failed');
@@ -28790,6 +30024,18 @@ class Sylk extends Component {
         return null;
     }
 
+    // The states a message in the given state must not be moved back from.
+    messageStateLaterStates(state) {
+        if (['failed', 'error', 'forbidden'].indexOf(state) > -1) {
+            return ['delivered', 'displayed'];
+        } else if (state == 'accepted') {
+            return ['delivered', 'displayed'];
+        } else if (state == 'delivered') {
+            return ['displayed'];
+        }
+        return [];
+    }
+
     // Single place where message/file-transfer state updates hit SQL.
     // Builds the UPDATE from the shared column mapping, runs the query and
     // triggers the matching UI refresh. Pass file_transfer for transfers
@@ -28812,16 +30058,26 @@ class Sylk extends Component {
         let query;
         let params;
 
+        // States only move forward. The peer's devices each answer on their own
+        // and in any order: one that cannot show a message (error) must not undo
+        // one that did (delivered/displayed), nor a late delivered undo displayed.
+        const later = this.messageStateLaterStates(state);
+        const guard = later.length ? ` and (state is null or state not in (${later.map(() => '?').join(', ')}))` : '';
+
         if (file_transfer) {
-            query = `UPDATE messages set metadata = ?, ${cols}, state = ? where msg_id = ?`;
-            params = [JSON.stringify(file_transfer), state, id];
+            query = `UPDATE messages set metadata = ?, ${cols}, state = ? where msg_id = ?${guard}`;
+            params = [JSON.stringify(file_transfer), state, id, ...later];
         } else {
-            query = `UPDATE messages set ${cols}, state = ? where msg_id = ?`;
-            params = [state, id];
+            query = `UPDATE messages set ${cols}, state = ? where msg_id = ?${guard}`;
+            params = [state, id, ...later];
         }
 
         try {
-            await this.ExecuteQuery(query, params);
+            const result = await this.ExecuteQuery(query, params);
+            if (later.length && result && result.rowsAffected === 0) {
+                utils.timestampedLog('[message] Message', id, '[imdn] state', state, 'ignored: already further along');
+                return 'stale';
+            }
             if (state !== 'accepted') {
 				utils.timestampedLog('[message] Message', id, '[imdn] state changed to', state);
 			}
@@ -28865,11 +30121,14 @@ class Sylk extends Component {
 
         utils.timestampedLog('File [transfer]', id, 'is', state, 'to', file_transfer && file_transfer.receiver && file_transfer.receiver.uri);
 
+        const was_failed = file_transfer.failed;
         if (['failed', 'error', 'forbidden'].indexOf(state) > -1) {
             file_transfer.failed = true;
         }
 
-        await this.updateMessageState(id, state, file_transfer, 'fileTransferStateChanged');
+        if (await this.updateMessageState(id, state, file_transfer, 'fileTransferStateChanged') === 'stale') {
+            file_transfer.failed = was_failed;
+        }
     }
 
     async messageStateChangedSync(obj) {
@@ -29275,6 +30534,279 @@ class Sylk extends Component {
 
     }
 
+    // application/sylk-messages-bulk-delete — another device of this account
+    // (Blink's Data manager) erased messages by criteria; erase the same here.
+    // Receive side only. Spec: docs/messages/sylk-messages-bulk-delete.md;
+    // the pure parts (validation, SQL, action match) live in messagesBulkDelete.js.
+    //
+    // Called live (incomingMessageFromWebSocket / outgoingMessage) and from the
+    // journal (_syncConversations). A replay selects nothing, so it is safe to
+    // run any number of times; the in-memory set only spares the query for the
+    // live-then-journal double delivery within one run.
+    //
+    // Real deletes, not deleted = 1, and no floor guard: a bulk delete is
+    // bounded by its own `until`.
+    //
+    // Returns {ids: Set<msg_id>, contacts: Map<contactId, {unread, lastMessage,
+    // lastMessageId}>} so the journal batch can scrub its own contact clones,
+    // or null when nothing was done.
+    async applyMessagesBulkDelete(content, src, messageId = null) {
+        // The request in full, before anything is decided about it.
+        let _raw;
+        try { _raw = typeof content === 'string' ? content : JSON.stringify(content); } catch (e) { _raw = String(content); }
+        let _bdId = null;
+        try { _bdId = (typeof content === 'string' ? JSON.parse(content) : content).bulk_delete_id || null; } catch (e) {}
+        utils.timestampedLog('[message] Bulk delete ' + (_bdId || '(no bulk_delete_id)')
+            + ' received, message ' + (messageId || '(no id)') + ', src=' + src + ': ' + _raw);
+
+        const parsed = bulkDelete.parse(content);
+        if (parsed.error) {
+            utils.timestampedLog('[message] Bulk delete ' + (_bdId || '(no bulk_delete_id)')
+                + ' ignored: ' + parsed.error + ', message ' + (messageId || '(no id)') + ', src=' + src);
+            return null;
+        }
+        const p = parsed.payload;
+        const c = p.criteria;
+
+        if (p.deviceId && p.deviceId === this.deviceId) {
+            console.log('[message] Bulk delete', p.id, 'is our own echo, ignored, src=' + src);
+            return null;
+        }
+
+        if (!this._appliedBulkDeletes) this._appliedBulkDeletes = new Set();
+        if (this._appliedBulkDeletes.has(p.id)) {
+            return null;
+        }
+
+        const account = this.state.accountId;
+        if (!account) return null;
+
+        // Claimed up front: the live call is not awaited, so the journal copy
+        // can arrive while this one is still running.
+        this._appliedBulkDeletes.add(p.id);
+
+        const rows = new Map();
+        let primary = 0;
+        let erasedCount = 0;
+        // Why a selection came out as it did: rows the SQL returned (type,
+        // contact, time), then those the JS checks dropped, and the actions
+        // seen on the rows dropped for their action.
+        const diag = {candidates: 0, period: 0, action: 0, seen: {}};
+
+        try {
+            // 1. Every URI of the contact, when the selection names one.
+            let contactUris = null;
+            if (c.contact) {
+                const _set = new Set([c.contact]);
+                try {
+                    for (const ct of (this.lookupContacts(c.contact) || [])) {
+                        for (const u of (this.getAllContactUris(ct) || [])) {
+                            if (u) _set.add(u);
+                        }
+                    }
+                } catch (e) { /* fall back to the bare URI */ }
+                contactUris = [..._set];
+            }
+
+            // 2. Primary selection, then the action / no-unix_timestamp checks.
+            const q = bulkDelete.buildSelect(account, c, contactUris);
+            const res = await this.ExecuteQuery(q.sql, q.params);
+            diag.candidates = res.rows.length;
+            for (let i = 0; i < res.rows.length; i++) {
+                const row = res.rows.item(i);
+                if (!row || !row.msg_id) continue;
+                const why = bulkDelete.whyNot(row, c);
+                if (why === null) {
+                    rows.set(row.msg_id, row);
+                } else {
+                    diag[why] += 1;
+                    if (why === 'action') {
+                        const a = bulkDelete.rowAction(row) || '(none)';
+                        diag.seen[a] = (diag.seen[a] || 0) + 1;
+                    }
+                }
+            }
+            if (contactUris) diag.uris = contactUris;
+            primary = rows.size;
+
+            // 3. Cascade downward by related_msg_id until nothing new turns up.
+            if (p.cascade && rows.size) {
+                let frontier = [...rows.keys()];
+                while (frontier.length) {
+                    const next = [];
+                    for (const ids of bulkDelete.chunks(frontier)) {
+                        const rq = bulkDelete.buildRelatedSelect(account, ids);
+                        const rr = await this.ExecuteQuery(rq.sql, rq.params);
+                        for (let i = 0; i < rr.rows.length; i++) {
+                            const row = rr.rows.item(i);
+                            if (row && row.msg_id && !rows.has(row.msg_id)) {
+                                rows.set(row.msg_id, row);
+                                next.push(row.msg_id);
+                            }
+                        }
+                    }
+                    frontier = next;
+                }
+            }
+
+            // 4. Erase.
+            const allIds = [...rows.keys()];
+            for (const ids of bulkDelete.chunks(allIds)) {
+                const dq = bulkDelete.buildDelete(account, ids);
+                const dr = await this.ExecuteQuery(dq.sql, dq.params);
+                erasedCount += (dr && dr.rowsAffected) || 0;
+            }
+
+            // 5. Files of the erased transfers (the per-message directory holds
+            //    the download, its thumbnail and the decrypted copy).
+            if (p.files) {
+                const base = RNFS.DocumentDirectoryPath + '/' + account + '/';
+                for (const row of rows.values()) {
+                    const ft = bulkDelete.fileTransferOf(row);
+                    if (!ft) continue;
+                    const remote = ft.sender.uri === account ? ft.receiver.uri : ft.sender.uri;
+                    const dir = base + remote + '/' + row.msg_id + '/';
+                    try {
+                        await RNFS.unlink(dir);
+                        this.updateStorageForContact(remote, ft.filesize, 0);
+                    } catch (e) { /* not downloaded */ }
+                    if (row.local_url && typeof row.local_url === 'string'
+                            && row.local_url.startsWith(base) && !row.local_url.startsWith(dir)) {
+                        try { await RNFS.unlink(row.local_url); } catch (e) {}
+                    }
+                }
+            }
+        } catch (e) {
+            utils.timestampedLog('[message] Bulk delete', p.id, 'failed:', e && e.message ? e.message : e, 'src=' + src);
+            this._appliedBulkDeletes.delete(p.id);   // let the journal copy retry
+            return null;
+        }
+
+        utils.timestampedLog('[message] Bulk delete ' + p.id + ': erased ' + erasedCount + ' rows'
+            + (rows.size > primary ? ' (' + primary + ' + ' + (rows.size - primary) + ' related)' : '')
+            + ' (' + bulkDelete.describe(c) + ')'
+            + ' on request of ' + (p.deviceId || '(unknown device)') + ', ' + src);
+        // How the selection was reached, so an empty or small result explains itself.
+        const _seen = Object.keys(diag.seen).map((k) => k + '=' + diag.seen[k]).join(', ');
+        utils.timestampedLog('[message] Bulk delete ' + p.id + ' selection: '
+            + diag.candidates + ' rows matched type/contact/time in SQL'
+            + (diag.uris ? ' (contact URIs: ' + diag.uris.join(', ') + ')' : '')
+            + ', ' + diag.period + ' dropped by period (no unix_timestamp)'
+            + ', ' + diag.action + ' dropped by action' + (_seen ? ' [their actions: ' + _seen + ']' : '')
+            + ', ' + primary + ' selected, ' + (rows.size - primary) + ' related by cascade');
+
+        if (rows.size === 0) {
+            return null;
+        }
+
+        const erased = new Set(rows.keys());
+        const contactUpdates = await this._refreshAfterBulkDelete(rows, erased);
+        return {ids: erased, contacts: contactUpdates};
+    }
+
+    // One refresh for the whole bulk delete: the open chat (and the media grids
+    // derived from it), the contacts' last message and unread lists. Nothing is
+    // notified and nothing counts as unread.
+    async _refreshAfterBulkDelete(rows, erased) {
+        const updates = new Map();
+
+        // Open chat: drop the bubbles at once, then rebuild from SQL so the
+        // metadata overlays (labels, replies) and location tracks follow.
+        try {
+            this._removeContactMessages([...erased]);
+        } catch (e) {}
+
+        // Contacts whose conversations lost rows.
+        const affected = new Map();
+        for (const row of rows.values()) {
+            const peer = bulkDelete.rowPeer(row);
+            if (!peer) continue;
+            try {
+                for (const ct of (this.lookupContacts(peer) || [])) {
+                    if (ct && ct.id) affected.set(ct.id, ct);
+                }
+            } catch (e) {}
+        }
+
+        for (const ct of affected.values()) {
+            const unread = (ct.unread || []).filter((id) => !erased.has(id));
+            const lastGone = !!(ct.lastMessageId && erased.has(ct.lastMessageId));
+            if (unread.length === (ct.unread || []).length && !lastGone) continue;
+            let lastMessage = ct.lastMessage;
+            let lastMessageId = ct.lastMessageId;
+            if (lastGone) {
+                const lm = await this._lastTextMessageFor(ct);
+                lastMessage = lm.lastMessage;
+                lastMessageId = lm.lastMessageId;
+            }
+            updates.set(ct.id, {unread, lastMessage, lastMessageId});
+        }
+
+        if (updates.size) {
+            await new Promise((resolve) => {
+                this.setState((prev) => ({
+                    allContacts: (prev.allContacts || []).map((ct) => {
+                        const u = ct && updates.get(ct.id);
+                        if (!u) return ct;
+                        return {
+                            ...ct,
+                            unread: (ct.unread || []).filter((id) => !erased.has(id)),
+                            lastMessage: u.lastMessage,
+                            lastMessageId: u.lastMessageId,
+                        };
+                    }),
+                }), resolve);
+            });
+            for (const ct of (this.state.allContacts || [])) {
+                if (ct && updates.has(ct.id)) {
+                    this.saveSylkContact(ct.uri, ct, 'bulk-delete');
+                }
+            }
+        }
+
+        try {
+            const sc = this.state.selectedContact;
+            if (sc && affected.has(sc.id) && typeof this.getMessages === 'function') {
+                this.getMessages(sc, {origin: 'bulk-delete'});
+            }
+        } catch (e) {}
+
+        return updates;
+    }
+
+    // Newest typed text message still in the conversation, for the contacts
+    // list preview, or nulls when there is none.
+    async _lastTextMessageFor(contact) {
+        const none = {lastMessage: null, lastMessageId: null};
+        try {
+            const uris = (this.getAllContactUris(contact) || [contact.uri]).filter(Boolean);
+            if (!uris.length) return none;
+            const ph = uris.map(() => '?').join(', ');
+            const res = await this.ExecuteQuery(
+                `SELECT msg_id, content, content_type, metadata FROM messages
+                  WHERE account = ? AND (from_uri IN (${ph}) OR to_uri IN (${ph}))
+                    AND content_type IN ('text/plain', 'text/html')
+                    AND (deleted IS NULL OR deleted = 0)
+                  ORDER BY unix_timestamp DESC LIMIT 20`,
+                [this.state.accountId, ...uris, ...uris]);
+            for (let i = 0; i < res.rows.length; i++) {
+                const row = res.rows.item(i);
+                const body = row.content == null ? null : String(row.content);
+                if (!body || body.startsWith('-----BEGIN PGP')) continue;
+                let metadata = null;
+                try { metadata = row.metadata ? JSON.parse(row.metadata) : null; } catch (e) {}
+                const lm = this.buildLastMessage({
+                    _id: row.msg_id, text: body, content: body,
+                    contentType: row.content_type, metadata,
+                });
+                if (lm != null) return {lastMessage: lm, lastMessageId: row.msg_id};
+            }
+        } catch (e) {
+            console.log('[message] bulk delete: last message lookup failed', e && e.message ? e.message : e);
+        }
+        return none;
+    }
+
     async expireMessage(id, duration=300) {
         utils.timestampedLog('[message] Expire message', id, 'in', duration, 'seconds after read');
         // TODO expire message
@@ -29543,8 +31075,8 @@ class Sylk extends Component {
                     continue;
                 }
 
-                if (item.to_uri.indexOf('@videoconference') > -1) {
-                    //console.log('Skip outgoing videoconference conference messages');
+                if (this._abIsConferenceUri(item.to_uri)) {
+                    //console.log('Skip outgoing conference messages');
                     continue;
                 }
 
@@ -30079,13 +31611,12 @@ class Sylk extends Component {
             return;
         }
 
-        if (uri.indexOf('@conference.') > -1
-            || uri.indexOf('@videoconference.') > -1) {
+        if (utils.isConferenceUri(uri, this.state.defaultConferenceDomain)) {
             // Conference rooms send no IMDNs, so skip the disposition logic
             // below — but the unread badge must STILL be cleared, otherwise
             // opening a conference room's chat leaves the counter stuck
             // (resetUnreadCount at the bottom of this method was never
-            // reached for @conference / @videoconference URIs).
+            // reached for conference URIs).
             try {
                 if (Platform.OS === 'android' && UnreadModule
                         && typeof UnreadModule.resetUnreadForContact === 'function') {
@@ -31279,11 +32810,11 @@ class Sylk extends Component {
 			this.renderSystemMessage(file_transfer.filename, error, 'incoming');
             this.fileTransferStateChanged(id, 'failed', file_transfer);
             delete this.downloadRequests[id];
-            if (error === 'not found') {
-                setTimeout(() => {
-                    this.deleteMessage(id, remote_party);
-                }, 2000);
-            }
+            // NOTE: a failed download must never delete the message on the
+            // server. This used to schedule deleteMessage(id, remote_party)
+            // (remote=true by default) 2 s after a bare 'not found' error,
+            // which removed the message for the peer and all of our other
+            // devices just because the file was gone.
         });
             //console.log('[dl-diag] step=after-RNBD.download-call id=' + id + ' hasHandler=' + !!this.downloadRequests[id]);
         } catch (e) {
@@ -35091,10 +36622,7 @@ class Sylk extends Component {
 				// upstream — so gate on that domain here too and skip the whole
 				// eligibility/logging path rather than emit a misleading
 				// "location sharing not available" line for a room URI.
-				const _locIsConference = typeof uri === 'string'
-					&& (uri.indexOf('@videoconference.') > -1
-						|| (this.state.defaultConferenceDomain
-							&& uri.toLowerCase().endsWith('@' + String(this.state.defaultConferenceDomain).toLowerCase())));
+				const _locIsConference = typeof uri === 'string' && this._abIsConferenceUri(uri);
 				if (_locIsConference) {
 					// conference room — no location actions
 				} else {
@@ -35518,7 +37046,7 @@ class Sylk extends Component {
 
 				if (deleteAll) {
 					console.log('[message] delete all messages exchanged with', uri);
-					if (!utils.isAnonymous(uri) && uri.indexOf('@videoconference.') === -1 && remote) {
+					if (!utils.isAnonymous(uri) && !this._abIsConferenceUri(uri) && remote) {
 						this.addJournal(orig_uri, 'removeConversation');
 					}
 
@@ -37308,7 +38836,28 @@ class Sylk extends Component {
             // Data-export announcements are live/ephemeral — never processed or
             // persisted from the journal. Skip entirely (the live outgoingMessage
             // carbon is the only path that acts on them).
-            if (message.contentType === exportAnnounce.EXPORT_CONTENT_TYPE) {
+            //
+            // application/sylk-addressbook-update is the same shape and is sent
+            // with skipJournal, so it should never appear here at all; a
+            // replayed one is a stale "refetch now" that would fire a pointless
+            // fetch on every boot.
+            //
+            // application/sylk-contact-update is RETIRED (see
+            // docs/messages/sylk-addressbook-update.md §10). Entries written
+            // before the cut stay in the server journal for ever, so the skip
+            // stays for ever too — it is the branch that ACTED on them that is
+            // gone.
+            if (message.contentType === exportAnnounce.EXPORT_CONTENT_TYPE
+                    || message.contentType === abNotify.CONTENT_TYPE
+                    || message.contentType === 'application/sylk-contact-update') {
+                continue;
+            }
+
+            // Account storage control messages (docs/CONTACT-AVATARS.md):
+            // application/sylk-storage-changed is never journalled, and an
+            // application/sylk-api-token request or reply that was is not a
+            // chat message. Neither is replayed.
+            if (acctStorage.isControlType(message.contentType)) {
                 continue;
             }
 
@@ -37321,6 +38870,44 @@ class Sylk extends Component {
 				messageTimestamp = new Date(message.timestamp).getTime();
 			} catch (e) {
 				console.log('cannot convert messageTimestamp', message.timestamp, e);
+				continue;
+			}
+
+			// Bulk delete from another device of the account. Addressed to the
+			// account itself: no uri, no contact. Applied, then the rows it
+			// erased are scrubbed from this batch's accumulators so the
+			// batch's final setState does not bring them back.
+			if (message.contentType === bulkDelete.CONTENT_TYPE) {
+				try {
+					const _bd = await this.applyMessagesBulkDelete(message.content, 'journal', message.id);
+					if (_bd && _bd.ids.size) {
+						for (const _u of Object.keys(renderMessages)) {
+							if (Array.isArray(renderMessages[_u])) {
+								renderMessages[_u] = renderMessages[_u].filter((m) => !(m && _bd.ids.has(m._id)));
+							}
+						}
+						for (const _u of Object.keys(lastMessages)) {
+							if (_bd.ids.has(lastMessages[_u])) delete lastMessages[_u];
+						}
+						const _scrub = (ct) => {
+							if (!ct) return;
+							ct.unread = (ct.unread || []).filter((id) => !_bd.ids.has(id));
+							const _u = _bd.contacts.get(ct.id);
+							if (_u) {
+								ct.lastMessage = _u.lastMessage;
+								ct.lastMessageId = _u.lastMessageId;
+							} else if (ct.lastMessageId && _bd.ids.has(ct.lastMessageId)) {
+								ct.lastMessage = null;
+								ct.lastMessageId = null;
+							}
+						};
+						for (const _id of Object.keys(updateContacts)) _scrub(updateContacts[_id]);
+						for (const _ct of modifiedContactsMap.values()) _scrub(_ct);
+					}
+				} catch (e) {
+					utils.timestampedLog('[message] journal bulk delete failed', message.id, e && e.message);
+				}
+				stats.delete = stats.delete + 1;
 				continue;
 			}
 
@@ -37605,6 +39192,17 @@ class Sylk extends Component {
 
 					stats.remove = stats.remove + 1;
 	
+				} else if (message.contentType === 'application/blink-call-detail-record') {
+					// A call published by another of this account's devices
+					// while this one was offline -- which is the whole reason
+					// these are journalled rather than sent skip-journal.
+					// Absorbed into the call history, never stored as chat.
+					try {
+						this._handleCallDetailRecord(message);
+					} catch (e) {
+						utils.timestampedLog('[cdr] journal handler failed:', e && e.message);
+					}
+
 				} else if (message.contentType === 'application/sylk-conversation-read') {
 					for (const contact of contacts) {
 						contact.unread = [];
@@ -37889,6 +39487,18 @@ class Sylk extends Component {
         const acc = account || this.state.accountId;
         if (!acc || this._abImportDoneForAccount === acc) return;
         this._abImportDoneForAccount = acc;
+
+        utils.timestampedLog('[ab] [lifecycle] addressbook STABLE for ' + acc
+            + ' — fetched, applied, and open for writes'
+            + (this._abBootAt ? ' (' + (Date.now() - this._abBootAt) + 'ms since launch)' : ''));
+
+        // The heal runs HERE and nowhere else: on the merged state, once. Any
+        // earlier and it operates on rows the server copy is about to replace;
+        // any more often and it becomes a feedback path.
+        setTimeout(() => {
+            if (this.unmounted) return;
+            this.healContactStore('addressbook-stable');
+        }, 0);
 
         // Call history was deferred until the contacts existed — replay it now
         // (contact-only: it tags contacts with calls / creates conference rooms).
@@ -38423,65 +40033,13 @@ class Sylk extends Component {
         return null;
     }
 
-    // A conference room exists under two SIP identities: the WebRTC video
-    // room (e.g. 733591@videoconference.sip2sip.info) and the SIP/MSRP focus
-    // bridge (e.g. 733591@conference.sip2sip.info). The focus forwards chat
-    // and file-sharing messages from the SIP side using the *bridge* domain,
-    // so without normalization they land in a SECOND conversation/contact
-    // (733591@conference.sip2sip.info) instead of the video room the user is
-    // actually in. Rewrite the bridge host to the video-conference host so
-    // both arrive in the same room.
-    //
-    // Match logic (host = the part after '@', minus any ;params):
-    //   1. host === configured conferenceSettings.sipBridge  → remap, OR
-    //   2. defaultConferenceDomain === 'video' + host  (the conventional
-    //      pairing: conference.X ↔ videoconference.X) — covers deployments
-    //      where sipBridge config wasn't published.
-    // The room number (local part) and any uri params are preserved.
-    _mangleConferenceBridgeUri(uri) {
-        try {
-            if (typeof uri !== 'string') return uri;
-            const atIdx = uri.indexOf('@');
-            if (atIdx < 0) return uri;
-            const user = uri.substring(0, atIdx);
-            let rest = uri.substring(atIdx + 1);
-            const semi = rest.indexOf(';');
-            const params = semi >= 0 ? rest.substring(semi) : '';
-            const host = (semi >= 0 ? rest.substring(0, semi) : rest).toLowerCase();
-
-            const videoDomain = (this.state.defaultConferenceDomain || 'videoconference.sip2sip.info').toLowerCase();
-            const sipBridge = this.state.conferenceSettings
-                && typeof this.state.conferenceSettings.sipBridge === 'string'
-                && this.state.conferenceSettings.sipBridge.length > 0
-                    ? this.state.conferenceSettings.sipBridge.toLowerCase()
-                    : null;
-
-            // Already the video domain — nothing to do.
-            if (host === videoDomain) return uri;
-
-            const isBridge = (sipBridge && host === sipBridge) || (videoDomain === 'video' + host);
-            if (isBridge) {
-                return user + '@' + videoDomain + params;
-            }
-            return uri;
-        } catch (e) {
-            return uri;
-        }
-    }
-
     async incomingMessageFromWebSocket(message) {
-        // Normalize the SIP focus-bridge domain to the video-conference domain
-        // so bridged room messages/files file under the same conversation as
-        // the video room the user joined (see _mangleConferenceBridgeUri).
-        try {
-            if (message && message.sender && message.sender.uri) {
-                const _mangled = this._mangleConferenceBridgeUri(message.sender.uri);
-                if (_mangled !== message.sender.uri) {
-                    console.log('[message] mangle conference bridge sender', message.sender.uri, '->', _mangled);
-                    message.sender.uri = _mangled;
-                }
-            }
-        } catch (e) {}
+        // Account storage control messages: handled before anything stores,
+        // displays, notifies or counts them (docs/CONTACT-AVATARS.md).
+        if (message && acctStorage.isControlType(message.contentType)) {
+            this._handleAccountStorageMessage(message, 'live');
+            return;
+        }
 
         if (message.contentType === 'application/sylk-location-sharing') {
             const _lw = messageLocationEnvelope(message);
@@ -38501,6 +40059,13 @@ class Sylk extends Component {
 		}
 
         this.saveLastSyncId(message.id, false, message.timestamp);
+
+        // Bulk delete relayed by the server to every device of the account.
+        // Never stored, never rendered.
+        if (message.contentType === bulkDelete.CONTENT_TYPE) {
+            this.applyMessagesBulkDelete(message.content, 'live', message.id);
+            return;
+        }
 
         if (message.content.startsWith('?OTR')) {
             return;
@@ -38886,7 +40451,20 @@ class Sylk extends Component {
                 && (message.contentType === 'application/sylk-conversation-remove'
                     || message.contentType === 'application/sylk-conversation-read'
                     || message.contentType === 'application/sylk-message-remove'
+                    || message.contentType === bulkDelete.CONTENT_TYPE
+                    || acctStorage.isControlType(message.contentType)
                     || message.contentType === 'message/imdn')) {
+            return;
+        }
+
+        // A call detail record from one of our own devices. Absorbed into the
+        // call history, never stored as chat -- see _handleCallDetailRecord.
+        if (message && message.contentType === 'application/blink-call-detail-record') {
+            try {
+                this._handleCallDetailRecord(message);
+            } catch (e) {
+                utils.timestampedLog('[cdr] handler failed:', e && e.message);
+            }
             return;
         }
 
@@ -43642,6 +45220,29 @@ class Sylk extends Component {
             return;
         }
 
+        // Addressbook-update tick from one of our own devices. Same carbon
+        // path as the export announcement above, and the same rule: never
+        // stored, never rendered. It only arms a (jittered) refetch.
+        if (message.contentType === abNotify.CONTENT_TYPE) {
+            this.handleAddressbookNotify(message);
+            return;
+        }
+
+        // Account storage control messages (a sibling's token request, or a
+        // change notification delivered as a carbon): never stored.
+        if (acctStorage.isControlType(message.contentType)) {
+            this._handleAccountStorageMessage(message, 'carbon');
+            return;
+        }
+
+        // Bulk delete addressed to our own account. The server relays it as an
+        // incoming message; handled here too in case it arrives as a carbon.
+        if (message.contentType === bulkDelete.CONTENT_TYPE) {
+            this.saveLastSyncId(message.id, false, message.timestamp);
+            this.applyMessagesBulkDelete(message.content, 'live (carbon)', message.id);
+            return;
+        }
+
         this.saveLastSyncId(message.id, false, message.timestamp);
         let gMsg;
 
@@ -43714,7 +45315,7 @@ class Sylk extends Component {
             return;
         }
 
-        if (message.sender.uri.indexOf('@videoconference') > -1) {
+        if (this._abIsConferenceUri(message.sender.uri)) {
             return;
         }
         
@@ -43807,7 +45408,9 @@ class Sylk extends Component {
 
                 content = decryptedBody;
                 if (message.contentType === 'application/sylk-contact-update') {
-                    this.handleReplicateContact(content);
+                    // Retired: accepted and ignored so a device still running
+                    // the old build keeps working. The addressbook itself is
+                    // now the payload — docs/messages/sylk-addressbook-update.md §10.
                 } else if (message.contentType === 'application/sylk-message-metadata') {
                     // Live state update for the local device + SQL row
                     // for restore-on-reload — same pair as the
@@ -43952,7 +45555,7 @@ class Sylk extends Component {
 				}
 				this.saveOutgoingMessageSql(message);
 			} else if (message.contentType === 'application/sylk-contact-update') {
-                this.handleReplicateContact(content);
+                // Retired: accepted and ignored (see §10 of the addressbook-update spec).
             } else {
 
                 this.saveOutgoingMessageSql(message);
@@ -44047,6 +45650,9 @@ class Sylk extends Component {
     }
 
     async outgoingMessageFromJournal(message, info={}) {
+        if (message && acctStorage.isControlType(message.contentType)) {
+            return;
+        }
         //console.log('outgoingMessageFromJournal', message.id, message.contentType , 'to', message.receiver, info);
 
 		// Location/meeting metadata is encrypted. The drop-gate below needs
@@ -44135,19 +45741,8 @@ class Sylk extends Component {
 
         if (is_encrypted) {
             if (message.contentType === 'application/sylk-contact-update') {
-                // to do get last sylk-contact-update after sync                
-				
-                /*
-                await OpenPGP.decrypt(message.content, this.state.keys.private).then((decryptedBody) => {
-                    console.log('Sync outgoing message', message.id, message.contentType, 'decrypted to', message.receiver);
-                    this.handleReplicateContactSync(decryptedBody, message.id, message.timestamp);
-                    
-                }).catch((error) => {
-                    console.log('Failed to decrypt my own message in sync:', error.message);
-                    
-                    return;
-                });
-                */
+                // Retired type: never persisted, never applied. Pre-cut journal
+                // entries keep arriving here for ever, so the skip stays.
             } else {
 				info.is_encrypted = true;
                 this.saveOutgoingMessageSqlBatch(message, info);
@@ -44156,9 +45751,7 @@ class Sylk extends Component {
 
         } else {
             if (message.contentType === 'application/sylk-contact-update') {
-                //this.handleReplicateContactSync(content, message.id, message.timestamp);
-
-				// TODO handle outgoing metadata                
+                // Retired type: never persisted, never applied (see above).
             } else {
 				info.is_encrypted = false;
                 await this.saveOutgoingMessageSqlBatch(message, info);
@@ -44171,6 +45764,18 @@ class Sylk extends Component {
         // Data-export announcements are live/ephemeral — never persisted to SQL.
         if (message.contentType === exportAnnounce.EXPORT_CONTENT_TYPE) {
             console.log('[export] announcement not persisted (memory only)');
+            return;
+        }
+
+        // Addressbook-update ticks are pure control: no row, no bubble, no
+        // unread count. The addressbook document is the payload; this message
+        // only says "go and read it".
+        if (message.contentType === abNotify.CONTENT_TYPE) {
+            return;
+        }
+
+        // Account storage control messages: never a row either.
+        if (acctStorage.isControlType(message.contentType)) {
             return;
         }
 
@@ -47139,7 +48744,10 @@ class Sylk extends Component {
     deletePublicKey(uri) {
         uri = uri.trim().toLowerCase();
 
-        if (uri.indexOf('@') === -1) {
+        // lookupContacts below expands the +/00 x bare/@domain variants itself,
+        // so a phone number must not be qualified here -- doing so only hid the
+        // bare row this is meant to find.
+        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
@@ -47246,50 +48854,7 @@ class Sylk extends Component {
 	// URIs are left alone (the alternation is gated on isPhoneNumber)
 	// because two different SIP users on different domains must NOT
 	// be collapsed into one another.
-	_phoneNumberVariants = (uriString) => {
-	  if (!uriString) return [];
-	  const atIdx = uriString.indexOf('@');
-	  const localPart = atIdx > -1 ? uriString.substring(0, atIdx) : uriString;
-	  const originalDomain = atIdx > -1 ? uriString.substring(atIdx) : null; // includes the '@'
-	  if (!utils.isPhoneNumber(localPart)) {
-	    return [];
-	  }
-
-	  // Build the set of equivalent local-part forms by swapping the
-	  // international IDD prefix between '+' and '00'. Anything else
-	  // (a national number with no prefix, or a SIP-style numeric
-	  // username) is treated as a single form on its own.
-	  const locals = new Set();
-	  locals.add(localPart);
-	  if (localPart.startsWith('+')) {
-	    locals.add('00' + localPart.substring(1));
-	  } else if (localPart.startsWith('00')) {
-	    locals.add('+' + localPart.substring(2));
-	  }
-
-	  // Cross-product with the two routing shapes (bare and routed via
-	  // the account's default domain). Also include the originally-
-	  // attached domain when present so lookups against a non-default
-	  // domain still match correctly.
-	  const variants = new Set();
-	  const domains = new Set();
-	  domains.add(''); // bare
-	  if (this.state.defaultDomain) {
-	    domains.add('@' + this.state.defaultDomain);
-	  }
-	  if (originalDomain) {
-	    domains.add(originalDomain);
-	  }
-	  for (const lp of locals) {
-	    for (const dom of domains) {
-	      variants.add(lp + dom);
-	    }
-	  }
-	  // Drop the input itself — exact-match lookup is always tried
-	  // first; the variants list is only for the miss path.
-	  variants.delete(uriString);
-	  return Array.from(variants);
-	};
+	_phoneNumberVariants = (uriString) => this._abRules.phoneNumberVariants(uriString);
 
 	// Canonical chat-line key for a peer URI. Defensively strips a stray
 	// wrapping quote layer, then reduces genuine international phone
@@ -47374,7 +48939,7 @@ class Sylk extends Component {
 	      // Previously logged "No contact matches" + a full dump of
 	      // every existing contact's (id, uri). That dump fired on
 	      // every conference participant join because the conference
-	      // room contact (foo@videoconference.…) doesn't exist as a
+	      // room contact (foo@conference.…) doesn't exist as a
 	      // Sylk contact and we always create-on-miss here. With
 	      // ~10+ saved contacts and multiple conferences per session
 	      // it was producing a wall of noise in the metro tail with
@@ -47521,44 +49086,16 @@ class Sylk extends Component {
 	// docs/ADDRESSBOOK_MIGRATION_PLAN.md. Wired to connection.addressbook
 	// events in the addAccount callback.
 
-	// server.default_uri.uri, else the uris[] entry flagged default, else uris[0]
-	_abChosenDefaultUri = (s) => {
-	    if (s && s.default_uri && s.default_uri.uri) return s.default_uri.uri;
-	    const list = (Array.isArray(s && s.uris) ? s.uris : []).filter(u => u && u.uri);
-	    if (list.length === 0) return null;
-	    const flagged = list.find(u => u.default);
-	    if (flagged) return flagged.uri;
-	    // No default set → pick the best match from the URI list.
-	    return this._abBestUri(list.map(u => u.uri));
-	};
+	// the server's defaultUri (default_uri also read), else the uris[] entry
+	// flagged default, else the best of uris[]
+	_abChosenDefaultUri = (s) => this._abRules.chosenDefaultUri(s);
 
 	// Best default URI: prefer local-domain non-number, then any SIP non-number,
 	// then a phone number, else the first URI.
-	_abBestUri = (uris) => {
-	    const arr = (uris || []).filter(Boolean);
-	    if (arr.length === 0) return null;
-	    const localDom = String(this.state.defaultDomain || '').toLowerCase();
-	    const isTel = (u) => !!utils.isPhoneNumber(u, this.state.defaultConferenceDomain);
-	    const domainOf = (u) => { const at = u.indexOf('@'); return at > -1 ? u.substring(at + 1).toLowerCase() : ''; };
-
-	    const local = localDom && arr.find(u => !isTel(u) && domainOf(u) === localDom);
-	    if (local) return local;
-	    const sip = arr.find(u => u.indexOf('@') > -1 && !isTel(u));
-	    if (sip) return sip;
-	    const tel = arr.find(u => isTel(u));
-	    if (tel) return tel;
-	    return arr[0];
-	};
+	_abBestUri = (uris) => this._abRules.bestUri(uris);
 
 	// unique, lowercased list of every URI on a server contact (default + uris[])
-	_abServerUris = (s) => {
-	    const list = Array.isArray(s && s.uris) ? s.uris : [];
-	    const all = [];
-	    const def = this._abChosenDefaultUri(s);
-	    if (def) all.push(def);
-	    list.forEach(u => { if (u && u.uri) all.push(u.uri); });
-	    return [...new Set(all.map(u => this._abNormServerUri(u)).filter(Boolean))];
-	};
+	_abServerUris = (s) => this._abRules.serverUris(s);
 
 	// Find a server contact sharing a URI with this local one, so the live
 	// replicate path can ADOPT it instead of POSTing a duplicate. The
@@ -47574,72 +49111,66 @@ class Sylk extends Component {
 	    return (ab.contacts || []).find(s => this._abServerUris(s).some(u => mine.has(u))) || null;
 	};
 
-	// R6: swap conference domain on the way in/out - local uses the videoconference
-	// bridge (defaultConferenceDomain), the server stores the SIP bridge domain.
-	_abVideoConfDomain = () => String(this.state.defaultConferenceDomain || '').toLowerCase();
-	// sipBridge domain is a fixed client convention: videoconference.X -> conference.X.
-	// Not read from server config.
-	_abSipBridgeDomain = () => {
-	    const v = this._abVideoConfDomain();
-	    if (v.startsWith('videoconference.')) return 'conference.' + v.substring('videoconference.'.length);
-	    return '';
+	// Combined helpers: canonical PSTN form. These two are the
+	// SERVER boundary, which is why the canonical (rather than merely bare) form
+	// is applied here and not in _abNormalizeUri: local rows keep the spelling
+	// they were created with, and only the identity we match and publish across
+	// clients is canonicalised.
+	_abNormServerUri = (uri) => this._abRules.normServerUri(uri);
+	_abLocalToServerUri = (uri) => this._abRules.localToServerUri(uri);
+
+	// Canonical +E.164 for a PSTN URI, the URI unchanged otherwise. The mobile
+	// half of Blink desktop's util.canonical_pstn_uri / pstn_e164, running the
+	// same pipeline in the same order so both clients derive ONE spelling of a
+	// number and stop publishing two contacts for one person:
+	//
+	//     bare local part -> trunk-zero repair -> "Replace 0 with" -> wire->E.164
+	//
+	// Desktop stores numbers bare and canonical ('+31206600957'); this device
+	// holds whatever was dialled or arrived on the INVITE ('0206600957',
+	// '0031646699999@sip1.budgetphone.nl'). Without this the same party is two
+	// server contacts and two rows in a shared Calls group -- the Tel group on
+	// this account already carries '+31206600957' AND '0206600957' for exactly
+	// that reason.
+	//
+	// Falls back to the bare local part whenever the rules are not configured or
+	// the result is not a plausible number, so a device with no dial plan behaves
+	// exactly as it did before. The 8-digit floor is Blink's (_pstn_to_e164), so
+	// neither side mints a number the other's matcher would not find again.
+	_abCanonicalPstn = (uri) => this._abRules.canonicalPstn(uri);
+
+	// The "Replace 0 with" dial rule, forward direction: a national number with a
+	// SINGLE leading 0 gets that 0 replaced by the configured prefix, which is by
+	// construction <access code><country code> ('0612345678' -> '0031612345678').
+	// Mirrors Call.js, with Blink desktop's correction: never fire on a number
+	// that is ALREADY international, which on an account whose access code is not
+	// '00' ('011...') still starts with a single 0 and would otherwise be
+	// rewritten into nonsense.
+	_abApplyLeadingZeroRule = abRules.applyLeadingZeroRule;
+
+	// One line per distinct rewrite, so a first run shows exactly which numbers
+	// changed identity without turning every reconcile into a wall of text.
+	_abLogPstnCanon = (from, to) => {
+		if (!this._abPstnCanonSeen) this._abPstnCanonSeen = new Set();
+		const key = from + '>' + to;
+		if (this._abPstnCanonSeen.has(key)) return;
+		this._abPstnCanonSeen.add(key);
+		utils.timestampedLog('[ab] [pstn] canonical "' + from + '" -> "' + to
+			+ '" (server-boundary identity; local row keeps its own spelling)');
 	};
-	_abSwapDomain = (uri, fromDom, toDom) => {
-	    if (!fromDom || !toDom) return uri;
-	    const u = (uri || '').trim().toLowerCase();
-	    const at = u.indexOf('@');
-	    if (at === -1) return u;
-	    const dom = u.substring(at + 1);
-	    return dom === fromDom ? u.substring(0, at) + '@' + toDom : u;
-	};
-	// server → local: conference.X  ⇒  videoconference.X (for match + display)
-	_abMangleConferenceDomainFromServer = (uri) => this._abSwapDomain(uri, this._abSipBridgeDomain(), this._abVideoConfDomain());
-	// local → server: videoconference.X  ⇒  conference.X (sipBridge), if set
-	_abMangleConferenceDomainToServer = (uri) => this._abSwapDomain(uri, this._abVideoConfDomain(), this._abSipBridgeDomain());
-	// Combined helpers: phone-number normalization (strip domain) + conf mangle.
-	_abNormServerUri = (uri) => this._abNormalizeUri(this._abMangleConferenceDomainFromServer(uri));
-	_abLocalToServerUri = (uri) => this._abMangleConferenceDomainToServer(this._abNormalizeUri(uri));
 
 	// R4: PSTN numbers (user part starts + or 0) are stored bare, no domain; the
 	// domain is appended only on the wire. Everything else lowercased/trimmed.
-	_abNormalizeUri = (uri) => {
-	    const u = (uri || '').trim().toLowerCase();
-	    if (!u) return u;
-	    if (utils.isPhoneNumber(u, this.state.defaultConferenceDomain)) {
-	        const at = u.indexOf('@');
-	        return at > -1 ? u.substring(0, at) : u;
-	    }
-	    return u;
-	};
+	_abNormalizeUri = (uri) => this._abRules.normalizeUri(uri);
 
 	// R1: IP-literal domain = junk; '@local' is another LAN client's Bonjour contact.
 	// Skip both locally but never delete from server (and don't count out-of-sync).
-	_abIsLocalDomain = (uri) => /@local$/i.test((uri || '').trim());
+	_abIsLocalDomain = abRules.isLocalDomain;
 
-	_abIsIpDomain = (uri) => {
-	    if (!uri) return false;
-	    const at = uri.lastIndexOf('@');
-	    if (at === -1) return false;
-	    let domain = uri.slice(at + 1).trim();
-	    if (domain.indexOf('[') > -1 && domain.indexOf(']') > -1) return true; // [IPv6]
-	    domain = domain.split(':')[0]; // strip :port (IPv4 only)
-	    return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(domain);
-	};
+	_abIsIpDomain = abRules.isIpDomain;
 
 	// R5: conference URI whose username starts with '0' is an anomaly -> purge.
-	_abIsConferenceAnomaly = (uri) => {
-	    const u = (uri || '').trim().toLowerCase();
-	    const at = u.indexOf('@');
-	    if (at === -1) return false;
-	    const user = u.substring(0, at);
-	    const domain = u.substring(at + 1);
-	    const confDomain = String(this.state.defaultConferenceDomain || '').toLowerCase();
-	    const sipBridge = this._abSipBridgeDomain();
-	    const isConfDomain = (confDomain && domain === confDomain)
-	        || (sipBridge && domain === sipBridge)
-	        || domain.startsWith('videoconference.') || domain.startsWith('conference.');
-	    return isConfDomain && user.startsWith('0');
-	};
+	_abIsConferenceAnomaly = (uri) => this._abRules.isConferenceAnomaly(uri);
 
 	// Per-account file tree under DocumentDirectoryPath/<account>/ (same base as
 	// file transfers); addressbook dumps live in <account>/addressbook/.
@@ -48089,46 +49620,19 @@ class Sylk extends Component {
 	    } catch (e) { /* missing dir is fine */ }
 	};
 
-	_abUriUsername = (uri) => {
-	    const u = (uri || '').trim().toLowerCase();
-	    const at = u.indexOf('@');
-	    return at > -1 ? u.substring(0, at) : u;
-	};
+	_abUriUsername = abRules.uriUsername;
 
 	// R3: a name is a "URI echo" (not a real display name) when empty, or equals a
 	// URI / a URI minus '@' / a URI's username. `uri` may be a string or array;
 	// an echo of ANY owned URI counts.
-	_abIsUriEcho = (name, uri) => {
-	    const n = (name || '').trim().toLowerCase();
-	    if (n === '') return true;
-	    const list = Array.isArray(uri) ? uri : [uri];
-	    for (const raw of list) {
-	        const u = (raw || '').trim().toLowerCase();
-	        if (!u) continue;
-	        if (n === u || n === u.replace('@', '') || n === this._abUriUsername(u)) return true;
-	    }
-	    return false;
-	};
+	_abIsUriEcho = (name, uri) => this._abRules.isUriEcho(name, uri);
 
 	// All URIs a local contact owns (primary + extras), lowercased and deduped.
-	_abLocalContactUris = (c) => {
-	    const out = [];
-	    const seen = new Set();
-	    [(c && c.uri) || '', ...((c && Array.isArray(c.uris)) ? c.uris : [])]
-	        .forEach(u => {
-	            const v = (u || '').trim().toLowerCase();
-	            if (v && !seen.has(v)) { seen.add(v); out.push(v); }
-	        });
-	    return out;
-	};
+	_abLocalContactUris = abRules.localContactUris;
 
 	// R3: display name to store - server real name wins, else local real name,
 	// else empty.
-	_abWinningDisplayName = (localName, serverName, uri) => {
-	    if (!this._abIsUriEcho(serverName, uri)) return serverName;
-	    if (!this._abIsUriEcho(localName, uri)) return localName;
-	    return '';
-	};
+	_abWinningDisplayName = (localName, serverName, uri) => this._abRules.winningDisplayName(localName, serverName, uri);
 
 	// Synced subset of a local contact written to server attributes (device-local
 	// props excluded). Only non-default values are stored; all-defaults -> {}.
@@ -48343,7 +49847,7 @@ class Sylk extends Component {
 	                return;
 	            }
 	            nPut++;
-	            // R4 numbers -> bare; R6 videoconference.X -> conference.X (server-stored form).
+	            // R4 numbers -> bare (server-stored form).
 	            const localUris = [...new Set([c.uri, ...(Array.isArray(c.uris) ? c.uris : [])]
 	                .filter(Boolean).map(u => this._abLocalToServerUri(u)))];
 	            emit('[ab] [migrate] PUT    contact_id=' + c.id + '  uri=' + (this._abLocalToServerUri(c.uri) || '-')
@@ -48404,6 +49908,27 @@ class Sylk extends Component {
 	                console.log('[ab] [get] group "' + gName + '" deleted on server — not a server-owned tag, ignored');
 	                return;
 	            }
+	            // A FOLD is a merge, not a removal. When two groups resolve to one
+	            // key the reconcile keeps the lowest id and deletes the rest --
+	            // and the delete arrives here looking exactly like a user deleting
+	            // the group. Stripping the tag off every member and re-adopting it
+	            // from the keeper seconds later is churn on a good day; on a device
+	            // that goes offline between the two it leaves the tag gone.
+	            //
+	            // So: if a group with the same key is still there, the group did
+	            // not go anywhere. Migrating Tel to its reserved id stripped 'tel'
+	            // from all 16 members and put it straight back, which is what this
+	            // guard is for.
+	            try {
+	                const _ab = this.state.connection && this.state.connection.addressbook;
+	                const survivor = ((_ab && _ab.groups) || []).find(g =>
+	                    g && g.id !== payload.id && this._abGroupKey(g) === key);
+	                if (survivor) {
+	                    utils.timestampedLog('[ab] [get] group "' + gName + '" deleted on server — '
+	                        + 'kept as id=' + survivor.id + ' (a fold, not a removal), tags left alone');
+	                    return;
+	                }
+	            } catch (e) { /* fall through to the strip */ }
 	            const matchesTag = (t) => {
 	                const tt = (t || '').trim().toLowerCase();
 	                return tt === tag.toLowerCase() || this._abTagToGroupName(tt).toLowerCase() === key;
@@ -48500,7 +50025,19 @@ class Sylk extends Component {
 	// the tag, so that device auto-answered while its contact screen correctly
 	// showed the feature off (observed 2026-08-16: pushes carried
 	// [messages, calls, autoanswer, favorite] with localProperties saying false).
-	_abNonGroupTags = new Set(['bypassdnd', 'muted', 'noread', 'history', 'caregiver', 'autoanswer']);
+	// Tags that are settings or provenance, never groups.
+	//
+	// 'phone' and 'email' are put on a card by the device address-book import
+	// (tags: ['contact','phone'] / ['contact','email']) to record WHICH KIND of
+	// address the row came from. They are not a filing the user made. Left in
+	// here they read as ordinary group tags, so the reconcile sees a local-only
+	// group and publishes one -- which is where the "Email" group that keeps
+	// reappearing on this account comes from, with a new id each time something
+	// else deletes it. 'contact' was already covered, by the purge path.
+	//
+	// The same three are already skipped together when tags are unioned across a
+	// multi-select (see _skipTags); this makes the group side agree.
+	_abNonGroupTags = abRules.NON_GROUP_TAGS;
 
 	// Fixed historic timestamp (2010-04-12) for contacts with no message history,
 	// so pure imports sort below contacts the user has actually talked to.
@@ -48525,18 +50062,41 @@ class Sylk extends Component {
 	// Locally-authoritative dynamic groups (from call state): when one is server-only
 	// the server copy is stale and gets deleted. 'autoanswer'/'missed' are excluded
 	// (synced groups - see _abAutoLocalGroups).
-	_abDynamicLocalGroups = new Set(['calls', 'recent']);
+	_abDynamicLocalGroups = abRules.DYNAMIC_LOCAL_GROUPS;
 
 	// Auto-derived categories (messages/chat from conversations, calls/recent from
 	// the call log), never server-owned: no strip/adopt/delete. 'missed' excluded
 	// (it is a synced group). Superset of _abDynamicLocalGroups.
-	_abAutoLocalGroups = new Set(['messages', 'chat', 'calls', 'recent']);
+	_abAutoLocalGroups = abRules.AUTO_LOCAL_GROUPS;
+
+	// ...UNLESS the server group carries a kind. A kind means another client
+	// created the group as part of the cross-client contract -- Blink desktop
+	// creates 'Calls' and fills it from its own call history -- so its
+	// membership is shared: this device contributes its own call parties to it
+	// and adopts the ones other clients put there.
+	//
+	// Without this the two halves never meet. Desktop publishes a Calls group
+	// nobody on mobile reads, and this handset holds 33 contacts tagged 'calls'
+	// that never reach the server. The group exists on both sides and means the
+	// same thing on both sides, and still nothing crosses.
+	//
+	// The original reason for excluding them -- "putting them here while the
+	// self-heal deletes server-only copies makes two devices fight" -- is gone:
+	// the heal can no longer delete a kinded group, and creation re-reads the
+	// live set by kind, so there is nothing left to fight over.
+	//
+	// 'messages', 'chat' and 'recent' carry no kind and stay per-device.
+	// 'conference' is excluded separately wherever it appears: it is derived
+	// from the URI, not from a tag.
+	_abIsDeviceLocalGroup = abRules.isDeviceLocalGroup;
+
+	// The same question for a group that does not exist on the server yet, where
+	// only the name can answer it: create the categories we know a kind for
+	// (Calls), never the purely derived ones (Messages, Recent).
+	_abIsDeviceLocalName = abRules.isDeviceLocalName;
 
 	// Group names are case-insensitive; canonical form is Capitalized.
-	_abCapitalizeGroup = (name) => {
-	    const n = (name || '').trim();
-	    return n ? n.charAt(0).toUpperCase() + n.slice(1) : n;
-	};
+	_abCapitalizeGroup = abRules.capitalizeGroup;
 
 	// Reserved tag <-> server group name mapping; the server name is canonical
 	// (e.g. 'chat' tag <-> "Messages" group). Custom tags use the Capitalized tag.
@@ -48561,59 +50121,26 @@ class Sylk extends Component {
 	// auto-answer. The per-device flag lives in localProperties.autoanswer and
 	// its 'autoanswer' tag is listed in _abNonGroupTags, so it is neither
 	// published nor adopted.
-	_abTagToGroupName = (tag) => {
-	    const map = { favorite: 'Favorites', blocked: 'Blocked', tel: 'Tel', chat: 'Messages' };
-	    return map[(tag || '').toLowerCase()] || this._abCapitalizeGroup(tag);
-	};
+	_abTagToGroupName = abRules.tagToGroupName;
 
 	// Reverse: the local tag we store for a given server group name.
-	_abGroupNameToTag = (name) => {
-	    const rev = { favorites: 'favorite', blocked: 'blocked', tel: 'tel' };
-	    const n = (name || '').trim();
-	    return rev[n.toLowerCase()] || n;
-	};
+	_abGroupNameToTag = abRules.groupNameToTag;
 
 	// A server group that must be purged, never cached/merged (auto-created 'contact').
-	_abIsPurgeGroup = (name) => {
-	    const n = (name || '').trim().toLowerCase();
-	    if (n === 'contact') return true;
-	    // Bogus group from a corrupted stringified-array tag (e.g. '["chat"]') -> purge,
-	    // never recreate.
-	    if (/^\[.*\]$/.test(n)) return true;
-	    return false;
-	};
+	_abIsPurgeGroup = abRules.isPurgeGroup;
 
 	// A local tag mapping to a purge group is an anomaly: remove it, never group it.
-	_abIsPurgeTag = (tag) => this._abIsPurgeGroup(tag) || this._abIsPurgeGroup(this._abTagToGroupName(tag));
+	_abIsPurgeTag = abRules.isPurgeTag;
 
-	_abIsConferenceUri = (uri) => {
-	    const u = (uri || '').trim().toLowerCase();
-	    const at = u.indexOf('@');
-	    if (at === -1) return false;
-	    const dom = u.substring(at + 1);
-	    const vc = this._abVideoConfDomain();
-	    const sb = this._abSipBridgeDomain();
-	    return (vc && dom === vc) || (sb && dom === sb)
-	        || dom.startsWith('videoconference.') || dom.startsWith('conference.');
-	};
+	_abIsConferenceUri = (uri) => this._abRules.isConferenceUri(uri);
 
 	// A conference room's display name must be the room number (URI username) or
 	// empty - never a URI echo. Non-conference URIs pass through.
-	_abConferenceName = (name, uri) => {
-	    if (!this._abIsConferenceUri(uri)) return name;
-	    if (!name || this._abIsUriEcho(name, uri)) return this._abUriUsername(uri) || '';
-	    return name;
-	};
+	_abConferenceName = (name, uri) => this._abRules.conferenceName(name, uri);
 
 	// Whether a contact legitimately belongs to a tag's group: 'tel' needs a real
 	// phone number; 'calls' excludes conference contacts; other tags accept any.
-	_abContactQualifiesForTag = (c, tag) => {
-	    const t = (tag || '').toLowerCase();
-	    const uri = (c && c.uri) || '';
-	    if (t === 'tel') return !!utils.isPhoneNumber(uri, this.state.defaultConferenceDomain);
-	    if (t === 'calls') return !this._abIsConferenceUri(uri);
-	    return true;
-	};
+	_abContactQualifiesForTag = (c, tag) => this._abRules.contactQualifiesForTag(c, tag);
 
 	previewGroupMigration = (source = 'server') => {
 	    try {
@@ -48955,7 +50482,9 @@ class Sylk extends Component {
 	        await this.ExecuteQuery('DELETE FROM contacts_groups WHERE account = ?', [account]);
 	        for (const g of groups) {
 	            if (!g || !g.id) continue;
-	            if (this._abIsPurgeGroup(g.name)) {
+	            // ...unless it carries a kind: a junk-shaped NAME on a group another
+	            // client owns is a rename to undo, not a group to delete.
+	            if (this._abIsPurgeGroup(g.name) && !this._abGroupIsShared(g)) {
 	                // 'contact' / bogus '["chat"]'-style groups are junk \u2014 delete
 	                // them from the server (live, no full re-migration needed) and
 	                // don't cache them.
@@ -49123,6 +50652,10 @@ class Sylk extends Component {
 	                        if (this._abIsPurgeGroup(g.name)) continue;
 	                        const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
 	                        if (members.some(m => m.id === dup.id) && members.filter(m => m.id !== dup.id).length === 0) {
+	                            if (this._abGroupIsShared(g)) {
+	                                utils.timestampedLog('[ab] [heal] KEEP empty server group "' + this._abCapitalizeGroup(g.name) + '" id=' + g.id + ' kind="' + this._abGroupKind(g) + '" -- cross-client group, emptying it here is not a reason to delete it');
+	                                continue;
+	                            }
 	                            await this._abExec('deleteGroup ' + g.name + ' (emptied by fold-dup delete)',
 	                                cb => ab.deleteGroup(g.id, cb));
 	                        }
@@ -49204,11 +50737,71 @@ class Sylk extends Component {
 	                    // edited (edit-protection window). If the server has not caught up
 	                    // to the local edit yet, keep the local value.
 	                    const _sa = (s && s.attributes) || {};
-	                    const _protName = this._abEditProtected(c.uri, 'name', sName);
+	                    // A LOCAL name that is itself only an echo of the address
+                    // carries no information either, and it can be a STALER
+                    // spelling than the server's: '+45853015555@sylk.link'
+                    // against the server's '+45853015555', or '0034913336701'
+                    // against '+34913336701'. The sNameReal guard alone refuses
+                    // both of those adoptions and leaves the wire-form spelling
+                    // sitting in storage forever, which is the one thing R4
+                    // says must never happen.
+                    //
+                    // PSTN ONLY, and this restriction is the whole point. A
+                    // phone number HAS a canonical spelling (bare E.164), so
+                    // between two echoes there is a right answer and the server
+                    // holds it. A SIP address has no such thing: 'Gogo' and
+                    // 'gogo@sylk.link' are both echoes of gogo@sylk.link, but
+                    // the first is what the UI should show and the second is
+                    // the raw address. Adopting across that pair trades DOWN --
+                    // observed on 2026-09-09, when this rule ran unrestricted
+                    // and turned 'Paul' into 'paul@dune.sylk.link' on 17
+                    // contacts before anyone could stop it.
+                    //
+                    // An EMPTY name is excluded too: a hole is a legitimate
+                    // state that the phonebook fills (§25.5), and adopting an
+                    // echo into every nameless row would write a name to dozens
+                    // of contacts for no gain and re-publish them all.
+                    let _localNameStale = false;
+                    try {
+                        _localNameStale = !!String(c.name || '').trim()
+                            && utils.isPhoneNumber(c.uri, this.state.defaultConferenceDomain)
+                            && this._abNameIsEcho(c.name, c.uri);
+                    } catch (e) { _localNameStale = false; }
+                    const _protName = this._abEditProtected(c.uri, 'name', sName);
 	                    const _protOrg = this._abEditProtected(c.uri, 'organization', _sa.organization);
 	                    const _protEmail = this._abEditProtected(c.uri, 'email', _sa.email);
 	                    const _keepOrg = c.organization, _keepEmail = c.email;
-	                    if (sNameReal && !_protName && (c.name || '') !== sName) c.name = sName;
+	                    if (sNameReal && !_protName && (c.name || '') !== sName) {
+                        // A real name, typed by a person. The server is
+                        // authoritative for it.
+                        c.name = sName;
+                    } else if (_localNameStale && !_protName) {
+                        // Both sides hold an echo of the same phone number, in
+                        // different spellings. NEITHER is authoritative and the
+                        // server is not a tie-breaker: on 2026-09-09 this branch
+                        // took the server's word and adopted '0034913336701'
+                        // over '+34913336701', because the other client had just
+                        // pushed the wire form up -- and had this device pushed
+                        // back, the two would have traded that name forever.
+                        //
+                        // So do not choose a side, compute the answer. The
+                        // canonical form of a number is a pure function of the
+                        // number and the account's dial plan, identical on every
+                        // client, which makes this convergent by construction:
+                        // whatever either side currently holds, both arrive at
+                        // the same string and the next pass is a no-op.
+                        let _canon = '';
+                        try { _canon = this._abCanonicalPstn(c.uri) || ''; } catch (e) { _canon = ''; }
+                        if (_canon && _canon !== c.name) {
+                            utils.timestampedLog('[ab] [name] "' + c.name + '" -> "' + _canon
+                                + '" for ' + c.uri
+                                + ' (the name was only an echo of the number; canonical form'
+                                + (sName && sName !== _canon
+                                    ? ', server has "' + sName + '"' : '')
+                                + ')');
+                            c.name = _canon;
+                        }
+                    }
 	                    this._abApplyServerAttrs(c, s);
 	                    if (_protOrg) c.organization = _keepOrg;
 	                    if (_protEmail) c.email = _keepEmail;
@@ -49270,13 +50863,111 @@ class Sylk extends Component {
 	                        _namePutIds.add(c.id);
 	                        utils.timestampedLog('[ab] [get] name-sync → server for ' + this._abNormalizeUri(c.uri)
 	                            + ': "' + c.name + '" (server had "' + (sName || '') + '")');
-	                        await this._abExec('updateContact ' + this._abLocalToServerUri(c.uri) + ' (name-sync)',
+	                        await this._abExecWhy('name-sync', 'updateContact ' + this._abLocalToServerUri(c.uri) + ' (name-sync)',
 	                            cb => ab.updateContact(this._abServerContactPayload(c, c.remote_id), cb));
 	                    }
 	                }
 	            }
 	        }
 	        const sGroups = groups.filter(g => !this._abIsPurgeGroup(g.name));
+
+	        // One line per server group, once per account per session: id, name,
+	        // the `kind` attribute and the member count. This is how the round
+	        // trip with Blink is verified -- Blink stamps kind='calls' / 'tel' and
+	        // logs the same shape on its side, so a kind that survives a sync
+	        // shows up in both logs, and one that gets dropped shows up in
+	        // neither. Cheap, and it writes nothing.
+	        try {
+	            const _kindAccount = this.state.accountId;
+	            if (!this._abGroupsDumped) this._abGroupsDumped = new Set();
+	            if (_kindAccount && !this._abGroupsDumped.has(_kindAccount)) {
+	                this._abGroupsDumped.add(_kindAccount);
+	                // Server contact id -> the address it is known by, so the
+	                // dump can NAME the members rather than count them. A group
+	                // that is wrong is almost always the wrong contact in it,
+	                // and a count cannot show that.
+	                const _addressOf = new Map();
+	                for (const sc of (ab.contacts || [])) {
+	                    if (sc && sc.id) {
+	                        _addressOf.set(sc.id,
+	                            this._abNormServerUri(this._abChosenDefaultUri(sc) || '') || sc.id);
+	                    }
+	                }
+	                const MEMBERS_PER_LINE = 6;
+	                const MEMBERS_SHOWN = 60;
+	                utils.timestampedLog('[ab] [kind] server has ' + sGroups.length
+	                    + ' group(s) for ' + _kindAccount + ':');
+	                for (const g of sGroups) {
+	                    const list = Array.isArray(g.contacts) ? g.contacts : [];
+	                    utils.timestampedLog('[ab] [kind]     id=' + (g.id || '?')
+	                        + ' name="' + this._abCapitalizeGroup(g.name || '') + '"'
+	                        + ' kind="' + this._abGroupKind(g) + '"'
+	                        + ' members=' + list.length);
+	                    // An id with no contact behind it is worth seeing as an
+	                    // id: it means the group references somebody the
+	                    // addressbook does not have.
+	                    const shown = list.slice(0, MEMBERS_SHOWN).map(
+	                        m => _addressOf.get(m && m.id) || ('<' + ((m && m.id) || '?') + '>'));
+	                    for (let i = 0; i < shown.length; i += MEMBERS_PER_LINE) {
+	                        utils.timestampedLog('[ab] [kind]         '
+	                            + shown.slice(i, i + MEMBERS_PER_LINE).join(', '));
+	                    }
+	                    if (list.length > shown.length) {
+	                        utils.timestampedLog('[ab] [kind]         ... and '
+	                            + (list.length - shown.length) + ' more');
+	                    }
+	                }
+	            }
+	        } catch (e) {
+	            utils.timestampedLog('[ab] [kind] cannot dump the server groups:', e);
+	        }
+
+	        // Give the Calls and Tel groups their `kind`, once per account per
+	        // session. This is the write half of the round trip Blink starts:
+	        // whichever client gets there first stamps, the other sees it already
+	        // set and does nothing.
+	        //
+	        // Deliberately narrow:
+	        //   - never creates a group. No Calls group here means no write.
+	        //   - never overwrites a kind somebody else wrote. A value we did not
+	        //     write is a fact about another client's intent, not a free slot.
+	        //   - preserves the rest of the attributes bag, as chapter 16.4
+	        //     requires of everyone.
+	        //   - once per account per session, because every write re-triggers
+	        //     dataUpdated -> reconcile and this loop is easy to start.
+	        try {
+	            const _kindAccount = this.state.accountId;
+	            if (!this._abKindsStamped) this._abKindsStamped = new Set();
+	            if (_kindAccount && !this._abKindsStamped.has(_kindAccount)) {
+	                this._abKindsStamped.add(_kindAccount);   // claim before any await
+	                for (const g of sGroups) {
+	                    if (!g || g.id == null) continue;
+	                    const canon = this._abCapitalizeGroup(g.name || '');
+	                    const want = this._abKindForGroupName(canon);
+	                    if (!want) continue;                   // not a group we name
+	                    const have = this._abGroupKind(g);
+	                    if (have === want) {
+	                        utils.timestampedLog('[ab] [kind] "' + canon + '" already stamped kind="'
+	                            + have + '"');
+	                        continue;
+	                    }
+	                    if (have) {
+	                        utils.timestampedLog('[ab] [kind] "' + canon + '" carries kind="' + have
+	                            + '" already, leaving it alone (wanted "' + want + '")');
+	                        continue;
+	                    }
+	                    // The gateway wants full contact objects in group.contacts.
+	                    const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
+	                    const attributes = Object.assign({}, g.attributes || {}, { kind: want });
+	                    utils.timestampedLog('[ab] [kind] stamping "' + canon + '" (id=' + g.id
+	                        + ', ' + members.length + ' member(s)) with kind="' + want + '"');
+	                    await this._abExecWhy('group-kind', 'updateGroup ' + canon + ' (stamp kind=' + want + ')',
+	                        cb => ab.updateGroup({ id: g.id, name: canon, attributes, contacts: members }, cb));
+	                }
+	            }
+	        } catch (e) {
+	            utils.timestampedLog('[ab] [kind] cannot stamp the group kinds:', e);
+	        }
 	        // Fold DUPLICATE server groups that share a name (case-insensitive) into
 	        // one canonical group (keep the SMALLEST id — same deterministic rule as
 	        // the contact fold). The in-memory collapse runs EVERY pass (cheap, no
@@ -49288,7 +50979,7 @@ class Sylk extends Component {
 	            const _gByName = {};
 	            for (const g of sGroups) {
 	                if (!g || g.id == null) continue;
-	                const k = this._abCapitalizeGroup(g.name).toLowerCase();
+	                const k = this._abGroupKey(g);
 	                (_gByName[k] = _gByName[k] || []).push(g);
 	            }
 	            const _folded = [];
@@ -49304,6 +50995,14 @@ class Sylk extends Component {
 	                    }
 	                }
 	                const merged = [...mergedById.values()];
+	                // Carry the kind onto the keeper. If the keeper predates the
+	                // attribute and a loser carries it, the folded group must stay
+	                // identifiable as the shared one -- otherwise a fold silently
+	                // demotes a cross-client group back to an ordinary local one.
+	                if (!this._abGroupKind(keeper)) {
+	                    const foldKind = arr.map(x => this._abGroupKind(x)).find(k => k) || '';
+	                    if (foldKind) keeper.attributes = Object.assign({}, keeper.attributes || {}, { kind: foldKind });
+	                }
 	                _foldOps.push({ keeper, merged, losers: sorted.slice(1) });
 	                keeper.contacts = merged;   // in-memory collapse for this pass
 	                _folded.push(keeper);
@@ -49321,7 +51020,7 @@ class Sylk extends Component {
 	                    utils.timestampedLog('[ab] [get] fold groups "' + this._abCapitalizeGroup(op.keeper.name)
 	                        + '" keep id=' + op.keeper.id + ' merge ' + op.merged.length + ' member(s), delete dup ids=['
 	                        + op.losers.map(g => g.id).join(', ') + ']');
-	                    await this._abExec('updateGroup ' + op.keeper.name + ' (fold-dup keep ' + op.keeper.id + ')',
+	                    await this._abExecWhy('fold-duplicates', 'updateGroup ' + op.keeper.name + ' (fold-dup keep ' + op.keeper.id + ')',
 	                        cb => ab.updateGroup({ id: op.keeper.id, name: this._abCapitalizeGroup(op.keeper.name),
 	                            attributes: op.keeper.attributes || {}, contacts: op.merged }, cb));
 	                    for (const g of op.losers) {
@@ -49340,12 +51039,11 @@ class Sylk extends Component {
 	            c.uri && !this._abIsIpDomain(c.uri));
 	        const linkedIds = new Set(localSyncable.map(c => c.remote_id).filter(Boolean));
 	        // Conference rooms ARE created on the server BY THE CLIENT. A room is
-	        // discovered from a call-history CDR (room@conference.X — the SIP bridge),
-	        // saved LOCALLY as room@videoconference.X (see processServerCallHistory /
-	        // saveHistory), and PUSHED to XCAP mangled back to room@conference.X
-	        // (_abLocalToServerUri / _abServerContactPayload). The adopt-by-URI matcher
-	        // (_abFindServerContactByUri) un-mangles, so a put adopts an existing
-	        // server room instead of duplicating it. Only ANOMALY rooms (username
+	        // discovered from a call-history CDR (room@conference.X), saved LOCALLY
+	        // under the same URI (see processServerCallHistory / saveHistory), and
+	        // PUSHED to XCAP as is. The adopt-by-URI matcher (_abFindServerContactByUri)
+	        // makes a put adopt an existing server room instead of duplicating it.
+	        // Only ANOMALY rooms (username
 	        // starting with 0) stay out of the put — those are junk.
 	        const unlinkedList = localSyncable.filter(c => !c.remote_id
 	            && !c.deletedTimestamp                 // in the Deleted folder — never auto-put
@@ -49531,7 +51229,14 @@ class Sylk extends Component {
 	            }
 	        }
 
-	        const sgNames = new Set(sGroups.map(g => this._abCapitalizeGroup(g.name).toLowerCase()));
+	        // Legacy PSTN spellings, repaired before the group reconcile reads
+	        // them: a contact rewritten here is matched by its canonical form for
+	        // the rest of this pass rather than the next one.
+	        await this._abNormalizePstnContacts(ab, sContacts);
+	        await this._abFileConferenceContacts(ab, sContacts);
+	        await this._abMigrateReservedIds(ab);
+
+	        const sgNames = new Set(sGroups.map(g => this._abGroupKey(g)));
 	        const lgNames = new Set();
 	        localSyncable.forEach(c => (Array.isArray(c.tags) ? c.tags : []).forEach(t => {
 	            const tag = (t || '').trim();
@@ -49558,7 +51263,7 @@ class Sylk extends Component {
 	            // don't qualify for the local tag.
 	            if (grpServerOnlyNames.length) {
 	                const sgByName = {};
-	                sGroups.forEach(g => { sgByName[this._abCapitalizeGroup(g.name).toLowerCase()] = g; });
+	                sGroups.forEach(g => { sgByName[this._abGroupKey(g)] = g; });
 	                grpServerOnlyNames.forEach(n => {
 	                    const g = sgByName[n];
 	                    const members = (g && Array.isArray(g.contacts)) ? g.contacts : [];
@@ -49572,17 +51277,54 @@ class Sylk extends Component {
 	            if (grpLocalOnlyNames.length) utils.timestampedLog('[ab] [get]   group local-only: ' + grpLocalOnlyNames.join(', '));
 	        }
 	        // Self-heal stale dynamic groups: a server-only group for a
-	        // locally-authoritative call-state category (calls/recent/missed) has
-	        // no local members anymore, so delete it from the server. It will be
-	        // re-created by replicateGroup if a contact gains the tag again.
+	        // locally-authoritative call-state category has no local members
+	        // anymore, so delete it from the server. It will be re-created by
+	        // replicateGroup if a contact gains the tag again.
+	        //
+	        // "Locally authoritative" holds only while this device is the only
+	        // writer of the group. It no longer is: Blink desktop creates and
+	        // fills Calls from its own call history (PSTN-CALLS-GROUP.md step 5),
+	        // so "this handset has no locally-tagged calls" does not mean the
+	        // group is stale -- it usually means the calls happened on another
+	        // client. On 2026-09-05 22:32:59 UTC this loop deleted a 30-member
+	        // Calls group three seconds after a spare handset connected, and
+	        // every other client lost it with it.
+	        //
+	        // Two guards, either of which would have prevented that alone:
+	        //
+	        //   kind    -- a group carrying BlinkGroupExtension.kind belongs to
+	        //              the cross-client contract, not to this device's call
+	        //              state. Whoever stamped the kind owns the group.
+	        //   members -- "stale" means empty. A group with members in it is
+	        //              evidence of the opposite, whatever the local tags say.
+	        //
+	        // Every skip is logged. A group NOT deleted here is the interesting
+	        // event now, and it has to be visible in logcat without a rebuild.
 	        for (const n of grpServerOnlyNames) {
 	            if (!this._abDynamicLocalGroups.has(n)) continue;
-	            const g = sGroups.find(x => this._abCapitalizeGroup(x.name).toLowerCase() === n);
-	            if (g && g.id) {
-	                utils.timestampedLog('[ab] [get] heal: deleting stale server group "'
-	                    + this._abCapitalizeGroup(g.name) + '" (locally-authoritative, no local members)');
-	                await this._abExec('deleteGroup ' + g.name + ' (stale dynamic)', cb => ab.deleteGroup(g.id, cb));
+	            const g = sGroups.find(x => this._abGroupKey(x) === n);
+	            if (!g || !g.id) continue;
+
+	            const healName = this._abCapitalizeGroup(g.name);
+	            const healKind = this._abGroupKind(g);
+	            const healMembers = Array.isArray(g.contacts) ? g.contacts.length : 0;
+
+	            if (this._abGroupIsShared(g)) {
+	                utils.timestampedLog('[ab] [heal] KEEP server group "' + healName + '" id=' + g.id
+	                    + ' kind="' + healKind + '" members=' + healMembers
+	                    + ' -- cross-client group, not this device to delete');
+	                continue;
 	            }
+	            if (healMembers) {
+	                utils.timestampedLog('[ab] [heal] KEEP server group "' + healName + '" id=' + g.id
+	                    + ' members=' + healMembers
+	                    + ' -- not stale, it has members (local tags say otherwise)');
+	                continue;
+	            }
+
+	            utils.timestampedLog('[ab] [heal] DELETE server group "' + healName + '" id=' + g.id
+	                + ' kind="" members=0 -- locally-authoritative, empty, no local members');
+	            await this._abExec('deleteGroup ' + g.name + ' (stale dynamic)', cb => ab.deleteGroup(g.id, cb));
 	        }
 
 	        // LIVE IMPORT (server->local): create a local contact for any server
@@ -49629,7 +51371,7 @@ class Sylk extends Component {
 	            for (const _g of sGroups) {
 	                const _gName = this._abCapitalizeGroup(_g.name);
 	                const _gKey = _gName.toLowerCase();
-	                if (_gKey === 'conference' || this._abAutoLocalGroups.has(_gKey)) continue;
+	                if (_gKey === 'conference' || this._abIsDeviceLocalGroup(_gKey, _g)) continue;
 	                const _gMembers = Array.isArray(_g.contacts) ? _g.contacts : [];
 	                const _inGroup = _gMembers.some(m => m && (m.id === s.id
 	                    || this._abServerUris(m).some(mu => this._abServerUris(s).includes(mu))));
@@ -49764,15 +51506,16 @@ class Sylk extends Component {
 			for (const n of grpLocalOnlyNames) {
 				if (_stale()) { utils.timestampedLog('[ab] [get] group put aborted — account changed mid-pass'); return; }
 				if (this._abIsPurgeGroup(n)) continue;     // never create junk groups
-				// Never put the local-authoritative dynamic groups (messages/
-				// chat/calls/recent/missed). Their membership is per-device call
-				// state, so it differs across devices — putting them here while
-				// the self-heal above deletes server-only copies makes two devices
-				// fight: one re-creates "Missed", the other deletes it, forever.
-				if (this._abAutoLocalGroups.has(n)) continue;
+				// Never put the purely derived categories (messages/chat/recent):
+				// their membership is per-device state and differs everywhere. A
+				// category we know a KIND for is different -- it is the shared group
+				// Blink desktop also creates, so this device may create it too, with
+				// the same kind, and _abCreateGroup re-reads the live set by kind so
+				// two clients racing cannot end up with two of them.
+				if (this._abIsDeviceLocalName(n)) continue;
 				// Re-check the LIVE server group set (another path may have
 				// created it since the snapshot was taken) to avoid a duplicate.
-				if ((ab.groups || []).some(g => this._abCapitalizeGroup(g.name).toLowerCase() === n)) continue;
+				if ((ab.groups || []).some(g => this._abGroupKey(g) === n)) continue;
 				const canon = this._abCapitalizeGroup(n);
 				const members = (localGroupMembers[n] || [])
 					.map(c => this._abServerContactPayload(c, c.remote_id))
@@ -49780,8 +51523,7 @@ class Sylk extends Component {
 				if (!members.length) continue;             // no server-linked member yet — put on a later sync
 				utils.timestampedLog('[ab] [get] put local-only group "' + canon + '" → server ('
 					+ members.length + ' member' + (members.length === 1 ? '' : 's') + ')');
-				await this._abExec('addGroup ' + canon + ' (local-only put)',
-					cb => ab.addGroup({ id: this._abGenerateServerId(), name: canon, attributes: {}, contacts: members }, cb));
+				await this._abCreateGroup(ab, canon, members, 'local-only put');
 			}
 
 			// Push local members into groups that ALREADY exist on the server
@@ -49794,8 +51536,8 @@ class Sylk extends Component {
 				const _memberPushes = [];
 				for (const g of sGroups) {
 					if (!g || g.id == null) continue;
-					const key = this._abCapitalizeGroup(g.name).toLowerCase();
-					if (key === 'conference' || this._abAutoLocalGroups.has(key) || this._abIsPurgeGroup(g.name)) continue;
+					const key = this._abGroupKey(g);
+					if (key === 'conference' || this._abIsDeviceLocalGroup(key, g) || this._abIsPurgeGroup(g.name)) continue;
 					const want = localGroupMembers[key] || [];
 					if (!want.length) continue;
 					const serverIds = new Set((Array.isArray(g.contacts) ? g.contacts : []).map(m => m && m.id).filter(Boolean));
@@ -49809,7 +51551,7 @@ class Sylk extends Component {
 							...missing.map(c => this._abServerContactPayload(c, c.remote_id))].filter(Boolean);
 						utils.timestampedLog('[ab] [get] push ' + missing.length + ' local member(s) → server group "'
 							+ this._abCapitalizeGroup(g.name) + '" [' + missing.map(c => this._abNormalizeUri(c.uri)).join(', ') + ']');
-						await this._abExec('updateGroup ' + g.name + ' (add local members)',
+						await this._abExecWhy('group-members', 'updateGroup ' + g.name + ' (add local members)',
 							cb => ab.updateGroup({ id: g.id, name: this._abCapitalizeGroup(g.name), attributes: g.attributes || {}, contacts: merged }, cb));
 					}
 				}
@@ -49826,10 +51568,10 @@ class Sylk extends Component {
 	        for (const g of sGroups) {
 	            if (_stale()) { utils.timestampedLog('[ab] [get] group adopt aborted — account changed mid-pass'); return; }
 	            const gName = this._abCapitalizeGroup(g.name);
-	            const key = gName.toLowerCase();
+	            const key = this._abGroupKey(g);
 	            if (key === 'conference') continue;                // URI-derived, handled separately
-	            if (this._abAutoLocalGroups.has(key)) continue;    // messages/chat/calls/recent/missed are local-authoritative
-	            const wantTag = this._abGroupNameToTag(gName);
+	            if (this._abIsDeviceLocalGroup(key, g)) continue;  // messages/chat/recent stay per-device; a kinded group is shared
+	            const wantTag = this._abTagForGroup(g);
 	            // Never adopt a FLAG tag from a server group. These are settings,
 	            // not groups — and 'autoanswer' in particular is PER DEVICE. While
 	            // this guard was missing, an 'Autoanswer' group left on the server
@@ -49970,11 +51712,32 @@ class Sylk extends Component {
 	// Hard ceiling on a single XCAP write. Chosen well above any healthy
 	// round-trip (observed: tens of ms) so it only ever fires on a lost
 	// callback, never on a slow-but-alive server.
-	_abWritesReady = () => !!(
-	    this.state.registrationState === 'registered'
-	    && this.state.connection && this.state.connection.state === 'ready'
-	    && this._abServerFetched
-	);
+	_abWritesReady = () => {
+	    const ready = !!(
+	        this.state.registrationState === 'registered'
+	        && this.state.connection && this.state.connection.state === 'ready'
+	        && this._abServerFetched
+	    );
+	    // Logged on the EDGE only. This is asked on every write, so logging the
+	    // value would drown the log; logging the change answers the question
+	    // anyone actually has -- when did this account become writable, and if
+	    // it never did, which of the three conditions is missing.
+	    if (ready !== this._abWritesReadyLast) {
+	        this._abWritesReadyLast = ready;
+	        if (ready) {
+	            utils.timestampedLog('[ab] [lifecycle] writes ENABLED for ' + this.state.accountId
+	                + (this._abBootAt ? ' (' + (Date.now() - this._abBootAt) + 'ms since launch)' : ''));
+	        } else {
+	            const _blockers = [];
+	            if (this.state.registrationState !== 'registered') _blockers.push('not registered');
+	            if (!(this.state.connection && this.state.connection.state === 'ready')) _blockers.push('connection not ready');
+	            if (!this._abServerFetched) _blockers.push('no server snapshot yet');
+	            utils.timestampedLog('[ab] [lifecycle] writes BLOCKED for ' + this.state.accountId
+	                + ' — ' + _blockers.join(', '));
+	        }
+	    }
+	    return ready;
+	};
 
 	// Release the first-import setup UI: the amber "Syncing contacts…" pill
 	// and the DND that _abMigrate turned on for the duration of the import.
@@ -50005,7 +51768,345 @@ class Sylk extends Component {
 	    }
 	};
 
-	_abExec = (label, fn) => new Promise((resolve) => {
+	// ===== Contact avatars in SylkServer account storage =====================
+	//
+	// Spec: Blink docs/CONTACT-AVATARS.md. The state machine is
+	// app/accountStorage.js (AvatarStore), bound to RNFS / blob-util in
+	// app/avatars.js; this is the glue: which account, the API token, the
+	// control messages, and the points in the addressbook lifecycle it runs
+	// at. Every log line is tagged [avatar].
+
+	_initAvatarStore = () => {
+	    if (this._avatarStoreReady) return;
+	    this._avatarStoreReady = true;
+	    avatarStore.deviceId = this.deviceId ? String(this.deviceId) : null;
+	    avatarStore._log = (line) => utils.timestampedLog(line);
+	    setAvatarContactResolver(this._avatarContactFor);
+	    avatarStore.configure({
+	        sendAvatar: (remoteId, avatar) => this._avatarSend(remoteId, avatar),
+	        refetch: (reason) => this._avatarRefetch(reason),
+	        contacts: () => this._avatarContacts(),
+	        notifyUser: (title, body) => {
+	            try { this._notificationCenter.postSystemNotification(title, { body }); } catch (e) { /* never */ }
+	        },
+	        canAsk: () => this._avatarCanAsk(),
+	        // The phone's address book photos are pictures of this device too:
+	        // they go to the server (docs/CONTACT-AVATARS.md).
+	        readPhoto: (uri) => this._avatarReadPhoto(uri),
+	        encodePhoto: (base64) => encodeAvatarBase64(base64),
+	        phonebookReady: () => !!(this._abPhonebookRead || this.state.abPermissionDenied || this._abPhonebookChecked),
+	        askConflicts: (items) => new Promise((resolve) => {
+	            utils.timestampedLog('[avatar] Asking which picture to keep for ' + items.length + ' contacts');
+	            this.setState({ avatarConflict: { items, account: this.state.accountId, resolve } });
+	        }),
+	    });
+	    // Pending uploads and deletes are also retried every 5 minutes.
+	    this._avatarRetryTimer = setInterval(() => {
+	        try { avatarStore.retryPending(); } catch (e) { /* never */ }
+	    }, acctStorage.PENDING_RETRY_INTERVAL);
+	};
+
+	// Storage account: the current account, when the server publishes an
+	// XCAP addressbook (the avatars ride on its contacts). Otherwise pictures
+	// set in the editor stay local.
+	_avatarBindAccount = () => {
+	    const account = this.state.accountId || null;
+	    const enabled = !!(account && this.state.addressBookServer === true);
+	    const key = (account || '') + '|' + enabled;
+	    if (key === this._avatarBoundKey) return;
+	    this._avatarBoundKey = key;
+	    if (!account) return;
+	    avatarStore.setAccount(account, enabled).catch((e) =>
+	        utils.timestampedLog('[avatar] cannot load the avatar cache: ' + (e && e.message)));
+	};
+
+	// sylkrtc addressbook hooks: the etags we have go out with every fetch,
+	// the picture data comes back in 'avatars' (before dataLoaded/Updated).
+	_avatarAttach = (ab) => {
+	    if (!ab || typeof ab.setAvatarCache !== 'function') {
+	        utils.timestampedLog('[avatar] this sylkrtc carries no avatars on the addressbook');
+	        return;
+	    }
+	    ab.setAvatarCache(() => avatarStore.cachedEtags());
+	    ab.removeListener('avatars', this._avatarOnAvatars);
+	    ab.on('avatars', this._avatarOnAvatars);
+	};
+
+	_avatarOnAvatars = (items) => {
+	    this._avatarBindAccount();
+	    avatarStore.applyAvatars(items);
+	};
+
+	// A contact update carrying the picture (or its removal). The gateway
+	// keeps it out of XCAP and echoes the outcome to every device. No
+	// addressbook-update tick: the echo reaches the other devices already.
+	_avatarSend = async (remoteId, avatar) => {
+	    const ab = this.state.connection && this.state.connection.addressbook;
+	    if (!ab || !this.state.addressBookServer || typeof ab.getContact !== 'function') return false;
+	    const current = ab.getContact(remoteId);
+	    if (!current) return false;
+	    // [avatar] in the line _abExec prints, so grep '\[avatar\]' tells the
+	    // whole story: "[ab] [avatar] [put] updateContact <id> (picture) ok".
+	    const previousCtx = this._abCtx;
+	    this._abCtx = (previousCtx || '') + '[avatar] ';
+	    try {
+	        return this._abExecWhy('avatar', 'updateContact ' + remoteId + ' ('
+	            + (avatar && avatar.remove ? 'remove picture' : 'picture') + ')',
+	            (cb) => ab.updateContact({ ...current, avatar }, cb));
+	    } finally {
+	        this._abCtx = previousCtx;
+	    }
+	};
+
+	// Missing picture data, or a change made over HTTP: fetch the addressbook
+	// again, through the same jittered scheduler as addressbook-update ticks.
+	_avatarRefetch = (reason) => {
+	    if (!this.state.addressBookServer || !this._abFetchScheduler) return;
+	    this._abFetchWanted.truncated = true;
+	    const delay = this._abFetchScheduler.schedule();
+	    if (delay === null) return;   // merged into a fetch already coming
+	    if (this._abFetchTimer) clearTimeout(this._abFetchTimer);
+	    this._abFetchTimer = setTimeout(this._abFireNotifyFetch, delay);
+	};
+
+	// The reconcile pass applied a freshly fetched addressbook: sync, GC,
+	// push, and retry what is pending (the same point the journal waits for).
+	_avatarOnAddressbookSettled = () => {
+	    this._avatarBindAccount();
+	    const ab = this.state.connection && this.state.connection.addressbook;
+	    try { avatarStore.onSettled(ab && Array.isArray(ab.contacts) ? ab.contacts : null); } catch (e) {
+	        utils.timestampedLog('[avatar] settle handler failed: ' + (e && e.message));
+	    }
+	};
+
+	// The local rows with their server id and phonebook photo, for the store.
+	_avatarContacts = () => (this.state.allContacts || [])
+	    .filter((c) => c && c.id)
+	    .map((c) => ({ id: c.id, remote_id: c.remote_id || '', name: c.name || '', uri: c.uri || '',
+	                   photo: c.photo || '' }));
+
+	// The bytes of a phonebook photo (content:// on Android, a file in the
+	// Caches folder on iOS, or a data: uri), as base64; null when unreadable.
+	_avatarReadPhoto = async (uri) => {
+	    if (!uri || typeof uri !== 'string') return null;
+	    const u = uri.trim();
+	    if (u.startsWith('data:')) {
+	        const comma = u.indexOf(',');
+	        return comma > -1 && u.slice(0, comma).indexOf(';base64') > -1 ? u.slice(comma + 1) : null;
+	    }
+	    if (/^https?:/i.test(u)) return null;
+	    const path = u.startsWith('file://') ? decodeURI(u.slice(7)) : u;
+	    try {
+	        return await RNFS.readFile(path, 'base64');
+	    } catch (e) {
+	        return null;
+	    }
+	};
+
+	// A view's identity -> the contact row it shows, for the avatar lookup.
+	_avatarContactFor = (identity) => {
+	    if (!identity) return null;
+	    const byId = identity.id && this.contactIndex ? this.contactIndex[identity.id] : null;
+	    if (byId && byId.id === identity.id) return byId;
+	    if (identity.remote_id !== undefined && identity.id) return identity;
+	    if (identity.uri && typeof this.lookupContact === 'function') {
+	        try { return this.lookupContact(identity.uri) || identity; } catch (e) { return identity; }
+	    }
+	    return identity;
+	};
+
+	// Only one choice window, and never over another modal or a call.
+	_avatarCanAsk = () => {
+	    if (this.state.avatarConflict) return false;
+	    if (this.state.currentCall || this.state.incomingCall) return false;
+	    if (this.state.appState && this.state.appState !== 'active') return false;
+	    return !Object.keys(this.state).some((k) => /^show\w*Modal$/.test(k) && this.state[k] === true);
+	};
+
+	_avatarConflictConfirmed = (choice) => {
+	    const pending = this.state.avatarConflict;
+	    this.setState({ avatarConflict: null });
+	    if (pending && typeof pending.resolve === 'function') pending.resolve(choice || {});
+	};
+
+	// Editor: a picture chosen or removed (after the contact was saved).
+	_applyAvatarChange = async (contact, change) => {
+	    if (!contact || !contact.id || !change) return;
+	    const c = { id: contact.id, remote_id: contact.remote_id || '', name: contact.name || '', uri: contact.uri || '',
+	                photo: contact.photo || '' };
+	    if (change.action === 'set' && change.jpegBase64) {
+	        await avatarStore.setPicture(c, change.jpegBase64);
+	    } else if (change.action === 'clear') {
+	        await avatarStore.clearPicture(c);
+	    }
+	};
+
+	// application/sylk-storage-changed and application/sylk-api-token, from
+	// any path. Never stored, shown, notified or counted. The token is
+	// Blink's (it reaches every device of the account); mobile needs none.
+	_handleAccountStorageMessage = (message, src) => {
+	    const acc = this.state.accountId;
+	    if (!message || !acc) return;
+	    if (message.contentType !== acctStorage.STORAGE_CHANGED_CONTENT_TYPE) return;
+	    // Sent by SylkServer from the account to itself.
+	    const sender = String((message.sender && message.sender.uri) || '').toLowerCase().replace(/^sip:/, '');
+	    if (sender && sender !== acc.toLowerCase()) return;
+	    avatarStore.handleChanged(message.content, acc);
+	};
+
+	// ===== application/sylk-addressbook-update ==============================
+	//
+	// After WE change the server addressbook, tell our other devices to refetch
+	// it; when one of them tells US, refetch. The tick carries no contact data
+	// — the XCAP document is the source of truth and the message only says "go
+	// and read it". Never journalled, never stored, never rendered.
+	//
+	// Full design: docs/messages/sylk-addressbook-update.md
+
+	_abNotifyThrottle = new abNotify.SendThrottle();
+	_abNotifyTimer = null;
+	_abFetchScheduler = new abNotify.FetchScheduler();
+	_abFetchTimer = null;
+	// Ids from every tick that merged into the one pending fetch.
+	_abFetchWanted = { contacts: new Set(), groups: new Set(), truncated: false };
+
+	// "Is anything of ours still in flight?" Both directions ask this: we must
+	// not announce a change the server has not taken yet, and we must not fetch
+	// a snapshot on top of our own unflushed writes — that is how a reconcile
+	// ends up re-pushing rows we were half way through replacing.
+	_abNotifySettled = () => !(this._abExecInFlight > 0) && !this._abReconcileRunning;
+
+	// One successful XCAP write joins the current burst. Called from _abExec,
+	// so every writer gets this for free by passing its {kind, id}.
+	_abNoteChange = (change) => {
+	    if (!change || !this.state.addressBookServer) return;
+	    if (!this._abNotifyThrottle.note(change.kind === 'group' ? 'group' : 'contact', change.id)) {
+	        return;   // suppressed (we are inside a reconcile pass)
+	    }
+	    this._abArmNotify();
+	};
+
+	_abArmNotify = () => {
+	    if (this._abNotifyTimer) { clearTimeout(this._abNotifyTimer); this._abNotifyTimer = null; }
+	    const delay = this._abNotifyThrottle.delay();
+	    if (delay === null) return;
+	    this._abNotifyTimer = setTimeout(this._abFlushNotify, delay);
+	};
+
+	_abFlushNotify = () => {
+	    this._abNotifyTimer = null;
+	    const tick = this._abNotifyThrottle.take(this._abNotifySettled());
+	    if (!tick) {
+	        // Not due, not settled, or the fuse is blown. Come back — the ids
+	        // are still held, so nothing is lost, it is only late. A blown fuse
+	        // is polled slowly: it takes five minutes to drain by definition.
+	        const d = this._abNotifyThrottle.delay();
+	        if (d !== null) {
+	            this._abNotifyTimer = setTimeout(this._abFlushNotify,
+	                Math.max(d, this._abNotifyThrottle.fuseBlown ? 30000 : 1000));
+	        }
+	        return;
+	    }
+	    this._abSendNotify(tick);
+	    // A burst can outlive one flush (writes that landed while we were
+	    // sending); re-arm if anything is already pending again.
+	    this._abArmNotify();
+	};
+
+	_abSendNotify = (tick) => {
+	    const account = this.state.account;
+	    if (!account) return;
+	    const payload = abNotify.buildTick({
+	        origin: this.deviceId,
+	        contactIds: tick.contactIds,
+	        groupIds: tick.groupIds,
+	        truncated: tick.truncated,
+	    });
+	    utils.timestampedLog('[ab] [notify] addressbook changed -> own devices:'
+	        + ' contacts=' + tick.contactIds.length
+	        + ' groups=' + tick.groupIds.length
+	        + (tick.truncated ? ' (truncated)' : ''));
+	    try {
+	        // skipJournal: the server must not store it — an offline device does
+	        // not need a stale "refetch" replayed at it, it refetches on register
+	        // anyway. skipDisposition: nothing to acknowledge.
+	        account.sendMessage(account.id, payload, abNotify.CONTENT_TYPE,
+	            { skipJournal: true, skipDisposition: true });
+	    } catch (e) {
+	        utils.timestampedLog('[ab] [notify] send failed: ' + (e && e.message ? e.message : e));
+	    }
+	};
+
+	// A tick from one of our own devices (it reaches siblings as an outgoing
+	// carbon, not as an incoming message).
+	handleAddressbookNotify = (message) => {
+	    if (!this.state.addressBookServer) return;   // no server addressbook here
+	    const tick = abNotify.parseTick(message.content || '');
+	    if (!tick) return;
+	    if (tick.origin && tick.origin === this.deviceId) return;   // our own echo
+	    // Freshness is judged ON ARRIVAL and never re-judged when the jitter
+	    // expires — a 30s delay on a 110s-old tick must not discard a fetch that
+	    // is still wanted.
+	    if (!abNotify.isFresh(tick.timestamp)) {
+	        utils.timestampedLog('[ab] [notify] ignoring stale addressbook tick');
+	        return;
+	    }
+	    if (tick.truncated || tick.contactIds === null) this._abFetchWanted.truncated = true;
+	    (tick.contactIds || []).forEach((id) => this._abFetchWanted.contacts.add(id));
+	    (tick.groupIds || []).forEach((id) => this._abFetchWanted.groups.add(id));
+
+	    const delay = this._abFetchScheduler.schedule();
+	    if (delay === null) {
+	        utils.timestampedLog('[ab] [notify] tick merged into the fetch already coming');
+	        return;
+	    }
+	    utils.timestampedLog('[ab] [notify] addressbook changed elsewhere — fetching in '
+	        + Math.round(delay / 1000) + 's');
+	    if (this._abFetchTimer) clearTimeout(this._abFetchTimer);
+	    this._abFetchTimer = setTimeout(this._abFireNotifyFetch, delay);
+	};
+
+	_abFireNotifyFetch = () => {
+	    this._abFetchTimer = null;
+	    const decision = this._abFetchScheduler.fire(this._abNotifySettled());
+	    if (!decision.fetch) {
+	        if (decision.backedOff) {
+	            utils.timestampedLog('[ab] [notify] too many fetches — backing off');
+	        }
+	        if (decision.retryIn != null) {
+	            this._abFetchTimer = setTimeout(this._abFireNotifyFetch, decision.retryIn);
+	        }
+	        return;
+	    }
+	    const ab = this.state.connection && this.state.connection.addressbook;
+	    if (!ab || typeof ab.refresh !== 'function') {
+	        // Lib without the patch: nothing to do but wait for the next
+	        // register, which fetches anyway.
+	        utils.timestampedLog('[ab] [notify] no addressbook.refresh() in this sylkrtc — skipping');
+	        this._abFetchScheduler.done();
+	        return;
+	    }
+	    const wanted = this._abFetchWanted;
+	    utils.timestampedLog('[ab] [notify] fetching addressbook'
+	        + (wanted.truncated ? ' (full — sender could not name what changed)'
+	           : ' (contacts=' + wanted.contacts.size + ' groups=' + wanted.groups.size + ')'));
+	    // The ids scope the log and, later, what is worth re-rendering — they
+	    // never scope the fetch: neither transport can fetch part of an
+	    // addressbook, so this is always a full snapshot.
+	    this._abFetchWanted = { contacts: new Set(), groups: new Set(), truncated: false };
+	    try {
+	        ab.refresh(() => {
+	            const next = this._abFetchScheduler.done();
+	            if (next != null) this._abFetchTimer = setTimeout(this._abFireNotifyFetch, next);
+	        });
+	    } catch (e) {
+	        utils.timestampedLog('[ab] [notify] fetch failed: ' + (e && e.message ? e.message : e));
+	        const next = this._abFetchScheduler.done();
+	        if (next != null) this._abFetchTimer = setTimeout(this._abFireNotifyFetch, next);
+	    }
+	};
+
+	_abExec = (label, fn, change = null) => new Promise((resolve) => {
 	    // FINAL CHOKE POINT for every XCAP write. No server addressbook on
 	    // this deployment → no write leaves the device, whatever path asked.
 	    if (!this.state.addressBookServer) {
@@ -50042,10 +52143,15 @@ class Sylk extends Component {
 	    // reconcile pass re-PUTs anything the server didn't take.
 	    let _settled = false;
 	    let _timer = null;
+	    this._abExecInFlight = (this._abExecInFlight || 0) + 1;
 	    const _settle = (ok) => {
 	        if (_settled) return;
 	        _settled = true;
 	        if (_timer) { clearTimeout(_timer); _timer = null; }
+	        this._abExecInFlight = Math.max(0, (this._abExecInFlight || 1) - 1);
+	        // Only a write the SERVER took is worth announcing. A failed put is
+	        // re-queued and will announce itself when it lands.
+	        if (ok && change) this._abNoteChange(change);
 	        resolve(ok);
 	    };
 	    _timer = setTimeout(() => {
@@ -50067,8 +52173,519 @@ class Sylk extends Component {
 	    }
 	});
 
+	// ---- origin stamps: who changed an entry, and when (Chapter 26) ----------
+	//
+	// Every contact/group write this device issues carries modified_by /
+	// modified_agent / modified_at / modified_reason / modified_hash in its
+	// attributes bag -- the same five Blink desktop writes, with a fingerprint
+	// that is byte-identical to Blink's (app/addressbookOrigin.js). A write that
+	// does not change what the document says about the entry carries the
+	// previous stamp through instead of claiming the entry for this device.
+	//
+	// Installed on the addressbook INSTANCE, once, so every write path -- the
+	// nineteen _abExec call sites today and whatever is added tomorrow -- is
+	// stamped without having to remember to. The previous copy is read before
+	// the library call, because addContact/updateContact overwrite the cache
+	// synchronously. Group member add/delete carry no body and are not stamped;
+	// nothing here uses them.
+	_abInstallOriginStamping = (ab) => {
+	    if (!ab || ab.__sylkOriginStamping) return;
+	    ab.__sylkOriginStamping = true;
+	    const methods = [['addContact', 'contact', 'getContact'], ['updateContact', 'contact', 'getContact'],
+	                     ['addGroup', 'group', 'getGroup'], ['updateGroup', 'group', 'getGroup']];
+	    for (const [method, kind, getter] of methods) {
+	        const original = ab[method];
+	        if (typeof original !== 'function') continue;
+	        ab[method] = (payload, cb = null) => {
+	            let out = payload;
+	            try {
+	                const previous = payload && payload.id !== undefined && typeof ab[getter] === 'function'
+	                    ? ab[getter](payload.id) : null;
+	                out = abOrigin.stampPayload(kind, payload, previous, {
+	                    deviceId: this.deviceId,
+	                    agent: USER_AGENT,
+	                    reason: this._abCurrentWriteReason(),
+	                });
+	            } catch (e) {
+	                utils.timestampedLog('[ab] [origin] cannot stamp ' + kind + ' '
+	                    + (payload && payload.id) + ': ' + (e && e.message));
+	                out = payload;
+	            }
+	            return original.call(ab, out, cb);
+	        };
+	    }
+	};
+
+	// Why a write happened, when it was not the user. Set synchronously around
+	// the library call: _abExec runs its fn inside the Promise executor, so the
+	// reason is in place for exactly that write and no other, however many
+	// awaits interleave around it.
+	_abWithReason = (reason, fn) => {
+	    const previous = this._abWriteReason;
+	    this._abWriteReason = reason || '';
+	    try { return fn(); } finally { this._abWriteReason = previous; }
+	};
+
+	_abExecWhy = (reason, label, fn, change = null) =>
+	    this._abExec(label, cb => this._abWithReason(reason, () => fn(cb)), change);
+
+	_abCurrentWriteReason = () => {
+	    if (this._abWriteReason) return this._abWriteReason;
+	    // Inside the migration every write is the migration's, unless the call
+	    // site said something more specific.
+	    const ctx = (this._abCtx || '').replace(/[\[\]\s]/g, '');
+	    return ctx;
+	};
+
+	// Say which device changed what, for every authoritative snapshot/update.
+	// Compared against the last document this device saw for the account, kept
+	// in AsyncStorage so a change made while the app was not running is still
+	// attributed on the next launch. Read-only with respect to the addressbook.
+	_abLogOrigins = (account) => {
+	    const run = async () => {
+	        const ab = this.state.connection && this.state.connection.addressbook;
+	        if (!ab || !account || account !== this.state.accountId) return;
+	        const key = 'ab_origin_snapshot.' + account;
+	        let previous = null;
+	        try { previous = abOrigin.parseSnapshot(await AsyncStorage.getItem(key)); } catch (e) {}
+	        const { changes, snapshot } = abOrigin.diffDocument({ contacts: ab.contacts, groups: ab.groups },
+	                                                           previous, this.deviceId);
+	        try { await AsyncStorage.setItem(key, JSON.stringify(snapshot)); } catch (e) {}
+	        if (changes === null) {
+	            utils.timestampedLog('[ab] [origin] ' + account + ': baseline of '
+	                + Object.keys(snapshot.contacts).length + ' contact(s), '
+	                + Object.keys(snapshot.groups).length + ' group(s) -- changes are attributed from the next document on');
+	            return;
+	        }
+	        if (!changes.length) return;
+	        utils.timestampedLog('[ab] [origin] ' + account + ': ' + changes.length + ' change(s) since the last document');
+	        for (const line of abOrigin.formatChanges(changes, 50)) {
+	            utils.timestampedLog('[ab] [origin]   ' + line);
+	        }
+	    };
+	    // One at a time: two updates racing would each diff against the same
+	    // stale snapshot and list the same change twice.
+	    this._abOriginChain = (this._abOriginChain || Promise.resolve())
+	        .then(run)
+	        .catch(e => utils.timestampedLog('[ab] [origin] cannot attribute changes: ' + (e && e.message)));
+	};
+
 	// Server-style id: 'id' followed by digits (no hyphens - XCAP node addressing breaks on them).
-	_abGenerateServerId = () => 'id' + Date.now().toString() + Math.floor(Math.random() * 1e12).toString();
+	_abGenerateServerId = abRules.generateServerId;
+
+	// ---- group `kind`: the identity that survives a rename -------------------
+	//
+	// A group's id belongs to whichever client created it (ours come out of
+	// _abGenerateServerId, Blink's replicated groups carry its own), and its
+	// name is a label the user can change at any time. Neither is an identity
+	// two clients can agree on. Blink went looking for the Calls group by name
+	// and would have created a second one the moment it was renamed.
+	//
+	// So the identity lives in the group's `attributes` bag, which chapter 16.4
+	// of docs/addressbook/addressbook.md already requires every client to carry
+	// through verbatim ("Do not drop attributes you don't recognize"). We
+	// already honour that on every updateGroup path; this starts WRITING it.
+	//
+	// Values are lowercase machine words, never display text. Blink writes the
+	// same ones (configuration/contact.py BlinkGroupExtension.kind).
+	_abGroupKinds = abRules.GROUP_KINDS;
+
+	// The local tag that represents membership of a kinded group. Pinned to the
+	// KIND, never derived from the display name: a kinded group is identified
+	// across clients by BlinkGroupExtension.kind precisely so the user can rename
+	// it, and deriving the tag from the name instead detaches every local tag
+	// from its server group the moment somebody does.
+	// NOTE the singular 'favorite': that is the tag this client stores, and
+	// _abGroupNameToTag maps 'Favorites' onto it. Writing 'favorites' here would
+	// tag every member with a string nothing else matches.
+	_abTagForKind = abRules.TAG_FOR_KIND;
+
+	// The id a group of this kind is CREATED with, from now on.
+	//
+	// A group the software files by itself -- from calls, from missed calls,
+	// from a number being a number -- is not the user's group and should not
+	// depend on the user's spelling of its name. '_messages' has worked exactly
+	// that way for years, and it works because only one client ever creates it.
+	//
+	// It stopped short of the others for a reason that has now gone: desktop
+	// defines CALLS_GROUP_ID = '_calls' but deliberately did not pin it, because
+	// this client minted a server-shaped id for every group it created and a
+	// pinned id would simply lose the race. It is pinned on both sides now, so
+	// whichever client gets there first produces the same id.
+	//
+	// The groups already in the wild keep their arbitrary ids forever -- an id
+	// cannot be changed, only deleted and re-created, which drops the membership
+	// on every device. That is what `kind` is for, and why resolution stays
+	// kind -> reserved id -> name rather than replacing one with the other.
+	_abReservedIdForKind = abRules.RESERVED_ID_FOR_KIND;
+
+	// Groups that predate `kind` but own a RESERVED ID, which is just as stable a
+	// name-independent identity: Blink desktop resolves both of these by id and
+	// nothing else (MESSAGES_GROUP_ID = '_messages', get_group('favorites')), so
+	// a rename cannot break them there. Without this they were the one place a
+	// rename still fell through to name matching here -- and renaming Favorites
+	// made this device create a SECOND Favorites group, because the server copy
+	// keyed as its new name while the local tags still keyed as 'favorites'.
+	// 'favorites' without the underscore is the LEGACY id -- it predates the
+	// convention and is still what every existing account carries. Both spellings
+	// resolve to the same key so the migration can move from one to the other
+	// without anything losing sight of the group in between.
+	_abReservedGroupKeys = abRules.RESERVED_GROUP_KEYS;
+
+	// The reconcile key for a server group: the canonical name of its KIND when it
+	// carries one, its own canonical name otherwise. This is what makes a rename
+	// survivable -- a group called "Anrufe" carrying kind='calls' keys as 'calls'
+	// and matches the local 'calls' tag, instead of reading as a group nobody has
+	// and a Calls group nobody has, which is how a duplicate gets created.
+	// Name stays the fallback for every group that predates the attribute.
+	_abGroupKey = abRules.groupKey;
+
+	// The local tag a server group maps to: its kind's tag when it has one, the
+	// name-derived tag otherwise.
+	_abTagForGroup = abRules.tagForGroup;
+
+	// Whether a group belongs to the cross-client contract rather than to this
+	// device. A kind is stamped by whichever client created the group -- Blink
+	// desktop stamps 'calls' on the Calls group it fills from its own call
+	// history -- and it means: not this device's local state to delete.
+	//
+	// It holds at ANY member count, zero included. Desktop creates the group
+	// empty and fills it afterwards, so an empty kinded group is a normal
+	// intermediate state and not an orphan. Deleting one during that window is
+	// what produced three Calls groups in six minutes on 2026-09-05.
+	//
+	// The one deletion this does NOT gate is the duplicate fold: when two groups
+	// resolve to the same key, merging them into the lowest id and deleting the
+	// losers is the repair, not the damage.
+	_abGroupIsShared = abRules.groupIsShared;
+
+	// One server contact, re-expressed with canonical PSTN spellings.
+	//
+	// Built from the SERVER record, not from a local row: this is a spelling
+	// repair on the shared document, and it must not depend on whether this
+	// device happens to hold a matching contact. Name, attributes, dialog and
+	// presence are carried through untouched -- a pass that rewrites more than
+	// it has to is a pass nobody dares run twice -- and the uri ids are kept, so
+	// nothing downstream sees a URI it has never met before.
+	_abCanonicalServerContact = (s) => {
+		const isTel = (u) => {
+			try { return !!utils.isPhoneNumber(u, this.state.defaultConferenceDomain); }
+			catch (e) { return false; }
+		};
+		const list = (Array.isArray(s && s.uris) ? s.uris : []).filter(u => u && u.uri);
+		const wasDefault = this._abChosenDefaultUri(s);
+		const byUri = new Map();
+		for (const u of list) {
+			const phone = isTel(u.uri);
+			const uri = phone ? this._abCanonicalPstn(u.uri) : String(u.uri).trim().toLowerCase();
+			if (!uri || byUri.has(uri)) continue;      // two spellings collapsing into one
+			byUri.set(uri, {
+				id: u.id || this._abGenerateServerId(),
+				uri: uri,
+				type: phone ? 'tel' : (u.type || 'sip'),
+				attributes: u.attributes || {},
+				default: u.uri === wasDefault,
+			});
+		}
+		const uris = [...byUri.values()];
+		if (uris.length && !uris.some(u => u.default)) uris[0].default = true;
+		const def = uris.find(u => u.default) || uris[0] || null;
+		const carry = (src) => (src && typeof src.policy === 'string')
+			? { policy: src.policy, subscribe: !!src.subscribe }
+			: { policy: 'default', subscribe: false };
+		// A name that is only an echo of the address follows the address. The
+		// contact literally called '+31618853125@sylk.link' is not named, it is
+		// wearing its own uri -- and once that uri is canonical the name is the
+		// last place the old spelling survives, so it reads as a different number
+		// to anyone looking at the list. A REAL name is never touched: 'Nissan
+		// Rustman' stays whatever the uri does.
+		// Two ways a name can be an echo. _abIsUriEcho catches the name that IS
+		// one of the addresses. It does not catch the name that is the same
+		// number spelled differently -- '+31618853125@sylk.link' as a name against
+		// '+31618853125' as the uri -- so the name is put through the same
+		// canonicalisation and compared: if it lands on the address, it was the
+		// address all along. A real name canonicalises to itself and never
+		// matches, which is what keeps 'Nissan Rustman' out of this.
+		const echoed = this._abIsUriEcho(s && s.name,
+			[...list.map(u => u.uri), ...uris.map(u => u.uri)])
+			|| !!(def && (s && s.name) && this._abCanonicalPstn(s.name) === def.uri);
+		// A room that was wearing its own address gets its ROOM NUMBER back, not
+		// the healed address: '338318', the way the rooms already in the group are
+		// named. Same rule _abConferenceName applies everywhere else -- it is only
+		// spelled out here because by this point the address has already been
+		// rewritten, so _abConferenceName's own echo test would no longer match
+		// the name against it.
+		const healed = def
+			? (this._abIsConferenceUri(def.uri) ? (this._abUriUsername(def.uri) || def.uri) : def.uri)
+			: '';
+		const name = (echoed && def) ? healed
+			: ((s && s.name) || (def && (this._abUriUsername(def.uri) || def.uri)) || 'Unknown');
+		return {
+			id: s.id,
+			name: name,
+			default_uri: def ? { id: def.id, uri: def.uri, type: def.type, attributes: def.attributes || {} } : null,
+			uris: uris,
+			dialog: carry(s && s.dialog),
+			presence: carry(s && s.presence),
+			attributes: (s && s.attributes) || {},
+		};
+	};
+
+	// Repair the PSTN contacts on the server, once per account per session.
+	//
+	// A phone number stored WITH a domain is not a cosmetic difference. Blink
+	// desktop gates its entire PSTN rewrite on '@' not being in the URI
+	// (util.format_uri, and see pstn_e164's docstring), so '+318008185@sylk.link'
+	// dialled from the contact list SKIPS the account dial plan -- replace
+	// leading zero, the IDD prefix, the external-line prefix, all of it -- while
+	// the same number stored bare dials correctly. Two contacts, two behaviours,
+	// and nothing on screen tells the user which is which.
+	//
+	// These rows are legacy: written before either client canonicalised, and
+	// never rewritten since, because a group write only stores membership ids and
+	// never touches the contact record. Nothing else was ever going to fix them.
+	//
+	// Every phone-number contact is also filed into Tel (kind='tel'), which is
+	// where a number belongs and what desktop already does -- it tags a PSTN
+	// party 'tel' as well as 'calls'.
+	_abNormalizePstnContacts = async (ab, sContacts) => {
+		const account = this.state.accountId;
+		if (!ab || !account) return;
+		if (!this._abPstnNormalized) this._abPstnNormalized = new Set();
+		if (this._abPstnNormalized.has(account)) return;
+		this._abPstnNormalized.add(account);        // claim before any await
+
+		const isTel = (u) => {
+			try { return !!utils.isPhoneNumber(u, this.state.defaultConferenceDomain); }
+			catch (e) { return false; }
+		};
+		const phoneContacts = [];
+		const drifted = [];
+		for (const s of (sContacts || [])) {
+			if (!s || !s.id) continue;
+			const list = (Array.isArray(s.uris) ? s.uris : []).filter(u => u && u.uri);
+			if (!list.length) continue;
+			if (list.some(u => isTel(u.uri))) phoneContacts.push(s);
+			// Drift is an address the shared document should be spelling another
+			// way: a PSTN number that is not canonical. Plus a name that is only
+			// an echo of one of those and has to follow it.
+			const payload = this._abCanonicalServerContact(s);
+			const moved = [];
+			for (const u of list) {
+				if (isTel(u.uri)) {
+					const want = this._abCanonicalPstn(u.uri);
+					if (want !== u.uri) moved.push({ from: u.uri, to: want, why: 'type=tel' });
+					continue;
+				}
+			}
+			const renamed = (payload.name || '') !== ((s && s.name) || '');
+			if (moved.length || renamed) {
+				drifted.push({ contact: s, moved, payload, renamed });
+			}
+		}
+
+		for (const { contact, moved, payload, renamed } of drifted) {
+			for (const m of moved) {
+				utils.timestampedLog('[ab] [uri] normalize contact ' + contact.id + ' "' + m.from
+					+ '" -> "' + m.to + '" (' + m.why + ')');
+			}
+			if (renamed) {
+				utils.timestampedLog('[ab] [pstn] normalize name ' + contact.id + ' "'
+					+ ((contact && contact.name) || '') + '" -> "' + payload.name
+					+ '" (the name was an echo of the address, not a name)');
+			}
+			await this._abExecWhy('repair', 'updateContact ' + contact.id + ' (canonical address)',
+				cb => ab.updateContact(payload, cb), { kind: 'contact', id: contact.id });
+		}
+
+		await this._abFileIntoKindGroup(ab, this._abGroupKinds.tel, 'Tel', phoneContacts, 'phone contacts');
+	};
+
+	// File every one of these server contacts into the group for a kind,
+	// creating the group if it does not exist yet.
+	//
+	// Membership of a kinded group is a statement about WHAT a contact is -- a
+	// phone number, a conference room -- so it does not depend on which device
+	// happens to be looking, and a contact that qualifies but is not filed is a
+	// fact the other clients cannot see. Nothing is ever removed here: this pass
+	// answers "is it missing", never "does it still belong".
+	_abFileIntoKindGroup = async (ab, kind, canonName, wanted, why) => {
+		if (!ab || !kind || !(wanted || []).length) return;
+		const group = (ab.groups || []).find(g => this._abGroupKind(g) === kind)
+			|| (ab.groups || []).find(g =>
+				this._abCapitalizeGroup(g.name).toLowerCase() === canonName.toLowerCase());
+		const members = group && Array.isArray(group.contacts) ? group.contacts : [];
+		const present = new Set(members.map(m => m && m.id).filter(Boolean));
+		const adding = wanted.filter(s => s && s.id && !present.has(s.id));
+		if (!adding.length) return;
+		const payloads = adding.map(s => this._abCanonicalServerContact(s));
+		utils.timestampedLog('[ab] [file] ' + adding.length + ' contact(s) -> "' + canonName
+			+ '" (kind=' + kind + '): ' + adding.map(s => (s.name || s.id)).join(', '));
+		if (!group) {
+			await this._abCreateGroup(ab, canonName, payloads, why);
+			return;
+		}
+		await this._abExecWhy('file-into-kind-group', 'updateGroup ' + canonName + ' (' + why + ')',
+			cb => ab.updateGroup({ id: group.id, name: this._abCapitalizeGroup(group.name),
+				attributes: group.attributes || {}, contacts: [...members, ...payloads] }, cb));
+	};
+
+	// Move the software-filed groups onto their reserved ids, once per account.
+	//
+	// An id cannot be changed in place, so the move is: CREATE the group under
+	// its reserved id carrying the same name, attributes and members, and let the
+	// duplicate fold in the reconcile retire the old one. Deliberately NOT a
+	// delete followed by a create -- that is the Sep 5 sequence, and a client
+	// that sees the delete without the create strips the group's tag from every
+	// local member. Create-first means the group is never absent, not for one
+	// pass, not on any device.
+	//
+	// The fold picks the lowest id by string sort, and every reserved id starts
+	// with '_', which sorts below the 'id<microseconds>' shape both clients mint.
+	// So the reserved copy is always the keeper and the members are merged onto
+	// it -- the outcome is the same whichever device happens to fold first, which
+	// is the only property that makes this safe to run while other clients are
+	// online.
+	//
+	// Set _abMigrateReservedIdsEnabled = false to switch it off.
+	_abMigrateReservedIdsEnabled = true;
+
+	_abMigrateReservedIds = async (ab) => {
+		const account = this.state.accountId;
+		if (!this._abMigrateReservedIdsEnabled || !ab || !account) return;
+		// Bounded retries rather than a single claim. The kinds are stamped in the
+		// same reconcile as this runs, so on the FIRST pass a group that has just
+		// been given its kind may not carry it yet -- Favorites and Missed were
+		// stamped and then skipped here for exactly that reason, and a one-shot
+		// claim meant they waited for the next app start. A couple of attempts
+		// converges; a counter stops a write that keeps failing from looping.
+		if (!this._abReservedIdTries) this._abReservedIdTries = new Map();
+		const tries = this._abReservedIdTries.get(account) || 0;
+		if (tries >= 3) return;
+		this._abReservedIdTries.set(account, tries + 1);
+
+		// The LIVE set, not the snapshot this reconcile started with: a kind
+		// stamped moments ago is only on the live objects.
+		const groups = (ab.groups) || [];
+		const existing = new Set(groups.map(g => g && g.id).filter(Boolean));
+		for (const g of groups) {
+			if (!g || !g.id) continue;
+			const kind = this._abGroupKind(g);
+			const reserved = kind && this._abReservedIdForKind[kind];
+			if (!reserved || g.id === reserved) continue;
+			if (existing.has(reserved)) {
+				// Somebody already made it. The fold will merge the two.
+				utils.timestampedLog('[ab] [ids] "' + this._abCapitalizeGroup(g.name) + '" kind="'
+					+ kind + '" id=' + g.id + ' -- ' + reserved + ' already exists, leaving the fold to merge them');
+				continue;
+			}
+			const members = Array.isArray(g.contacts) ? g.contacts.filter(m => m && m.id) : [];
+			utils.timestampedLog('[ab] [ids] "' + this._abCapitalizeGroup(g.name) + '" kind="' + kind
+				+ '" ' + g.id + ' -> ' + reserved + ' (' + members.length
+				+ ' member(s) carried; the fold retires the old copy)');
+			// addGroup directly rather than _abCreateGroup: that refuses to create a
+			// second group of a kind, which is right everywhere except here, where
+			// the second copy IS the migration and the fold is what removes the first.
+			const ok = await this._abExecWhy('reserved-id', 'addGroup ' + this._abCapitalizeGroup(g.name)
+				+ ' (reserved id ' + reserved + ')',
+				cb => ab.addGroup({ id: reserved, name: this._abCapitalizeGroup(g.name),
+					attributes: Object.assign({}, g.attributes || {}, { kind }),
+					contacts: members }, cb));
+			if (ok) existing.add(reserved);
+		}
+	};
+
+	// Every conference room the document knows about belongs in Conference.
+	//
+	// A room is recognised by its URI, not by a tag: _abIsConferenceUri matches
+	// the account's configured conference domain and anything under conference.,
+	// which is the same test the rest of the client uses to
+	// decide a URI is a room rather than a person. Filing them is what lets the
+	// other clients treat them as rooms -- a room sitting outside the group is
+	// indistinguishable from a contact whose name happens to be a number.
+	_abFileConferenceContacts = async (ab, sContacts) => {
+		// Once per account per session, like the PSTN repair: the pass is
+		// idempotent, but a write the server does not apply would otherwise be
+		// retried on every reconcile forever. Its own claim rather than a shared
+		// one, so a failure in either pass does not silently cancel the other.
+		const account = this.state.accountId;
+		if (!ab || !account) return;
+		if (!this._abConferenceFiled) this._abConferenceFiled = new Set();
+		if (this._abConferenceFiled.has(account)) return;
+		this._abConferenceFiled.add(account);       // claim before any await
+
+		const rooms = (sContacts || []).filter(s => {
+			if (!s || !s.id) return false;
+			const uris = (Array.isArray(s.uris) ? s.uris : []).map(u => u && u.uri).filter(Boolean);
+			return uris.some(u => this._abIsConferenceUri(u) && !this._abIsConferenceAnomaly(u));
+		});
+		await this._abFileIntoKindGroup(ab, this._abGroupKinds.conference, 'Conference',
+			rooms, 'conference rooms');
+	};
+
+	// The one place a group is created on the server.
+	//
+	// A kinded group is cross-client: Blink desktop creates and stamps the same
+	// ones, so a second copy is not a duplicate row to tidy up later -- it is a
+	// second group every client then fights over. On 2026-09-05 two Calls groups
+	// were minted 83 seconds apart and a third four minutes later, because each
+	// creator checked a snapshot that was already stale by the time it acted.
+	//
+	// So for a kinded group: refuse to create before a genuine server snapshot
+	// has been fetched this session -- "no Calls group" a second after sign-in
+	// means "it has not arrived yet", never "there is none" -- and then re-read
+	// the LIVE set by KIND at the last possible moment, because a name check
+	// misses a group somebody renamed. _abExec enforces the same snapshot gate
+	// for every write; this one says so in the log, against the group.
+	//
+	// Two clients that race anyway converge through the duplicate fold in the
+	// reconcile: same key, lowest id keeps, members merged, losers deleted.
+	_abCreateGroup = async (ab, name, members, why) => {
+		const canon = this._abCapitalizeGroup(name);
+		const kind = this._abKindForGroupName(canon);
+		if (kind) {
+			if (!this._abServerFetched) {
+				utils.timestampedLog('[ab] [heal] SKIP create "' + canon + '" kind="' + kind
+					+ '" -- no genuine server snapshot yet (' + why + ')');
+				return false;
+			}
+			const reserved = this._abReservedIdForKind[kind];
+			const live = ((ab && ab.groups) || []).find(g =>
+				this._abGroupKind(g) === kind || (reserved && g && g.id === reserved));
+			if (live) {
+				utils.timestampedLog('[ab] [heal] SKIP create "' + canon + '" kind="' + kind
+					+ '" -- already on the server as id=' + live.id + ' name="'
+					+ this._abCapitalizeGroup(live.name) + '" (' + why + ')');
+				return false;
+			}
+		}
+		// A software-filed group is created under its reserved id, so both clients
+		// name it the same thing whoever creates it first. Everything else gets a
+		// minted id: a group the user made is the user's, and nothing else has an
+		// opinion about what it should be called.
+		const identifier = (kind && this._abReservedIdForKind[kind]) || this._abGenerateServerId();
+		return this._abExecWhy(why === 'replicate' ? '' : 'create-group', 'addGroup ' + canon + ' (' + why + ')',
+			cb => ab.addGroup({ id: identifier, name: canon,
+				attributes: this._abGroupAttributesForName(canon), contacts: members || [] }, cb));
+	};
+
+	// The kind a group with this canonical name should carry, or '' for an
+	// ordinary user group we have no opinion about.
+	_abKindForGroupName = (name) => {
+		const key = this._abCapitalizeGroup(name || '').toLowerCase();
+		return this._abGroupKinds[key] || '';
+	};
+
+	// Attributes to create a group with: the kind when we know one, nothing
+	// otherwise. Never invents any other attribute.
+	_abGroupAttributesForName = (name) => {
+		const kind = this._abKindForGroupName(name);
+		return kind ? { kind } : {};
+	};
+
+	// The kind currently on a server group, tolerant about shape: XCAP
+	// attribute values are text, and an absent attribute is not an error.
+	_abGroupKind = abRules.groupKind;
 
 	// Display name for a server contact (server name unless URI-echo; system-addressbook
 	// fallback for phone numbers).
@@ -50190,7 +52807,7 @@ class Sylk extends Component {
 	        const id = selfServer ? selfServer.id : this._abGenerateServerId();
 	        const payload = this._abServerContactPayload(selfLocal, id);
 	        const label = (selfServer ? 'updateContact' : 'addContact') + ' (self MigratedVersion=' + this._abMigrationVersion + ')';
-	        return await this._abExec(label, cb => (selfServer ? ab.updateContact(payload, cb) : ab.addContact(payload, cb)));
+	        return await this._abExecWhy('migration-marker', label, cb => (selfServer ? ab.updateContact(payload, cb) : ab.addContact(payload, cb)));
 	    } catch (e) { utils.timestampedLog('[ab] [migrate] write self marker error', e && e.message); return false; }
 	};
 
@@ -50408,7 +53025,7 @@ class Sylk extends Component {
 	            const payload = this._abServerContactPayload(selfLocal, id);
 	            const label = (selfServer ? 'updateContact' : 'addContact')
 	                + ' (self keys escrow device="' + keyRecord.device + '")';
-	            const ok = await this._abExec(label, cb => (selfServer ? ab.updateContact(payload, cb) : ab.addContact(payload, cb)));
+	            const ok = await this._abExecWhy('keys', label, cb => (selfServer ? ab.updateContact(payload, cb) : ab.addContact(payload, cb)));
 	            utils.timestampedLog('[ab] [keys] escrow upload ' + (ok ? 'ok' : 'failed')
 	                + ' — device="' + keyRecord.device + '" timestamp=' + keyRecord.timestamp);
 	            // The self contact now carries a blob we just proved decryptable
@@ -50598,18 +53215,35 @@ class Sylk extends Component {
 	    const uniq = [...new Set([c.uri, ...(Array.isArray(c.uris) ? c.uris : [])]
 	        .filter(Boolean).map(u => this._abLocalToServerUri(u)))];
 	    // Server URI type: 'tel' for a phone number, 'sip' otherwise.
-	    const _abUriType = (u) => utils.isPhoneNumber(u, this.state.defaultConferenceDomain) ? 'tel' : 'sip';
-	    const uris = uniq.map(u => ({ id: this._abGenerateServerId(), uri: u, type: _abUriType(u), attributes: {}, default: u === primary }));
+	    const _abUriType = (u) => this._abRules.uriType(u);
+	    // The server contact this payload replaces, if there is one: its
+	    // dialog/presence policies are carried through unchanged (below) and its
+	    // URI ids are reused (next).
+	    const ab = this.state.connection && this.state.connection.addressbook;
+	    const existing = (ab && Array.isArray(ab.contacts)
+	        ? ab.contacts.find(s => s && s.id === id) : null)
+	        || this._abFindServerContactByUri(c);
+	    // REUSE the id the server already holds for each URI. Minting a fresh
+	    // one on every put rewrote the <uri> element of every contact the pass
+	    // touched, so a single display-name edit changed six contacts and bumped
+	    // the document etag for five of them where nothing else differed. The
+	    // ids are also how XCAP addresses a node, and how another client (Blink
+	    // stores them as ContactURI.id) tells one URI from the same URI: an id
+	    // that changes under them turns an update into a remove-and-add. Only a
+	    // URI the server has never seen gets a new id.
+	    const _abExistingUriIds = new Map();
+	    for (const e of (existing && Array.isArray(existing.uris) ? existing.uris : [])) {
+	        if (e && e.id && e.uri) _abExistingUriIds.set(String(e.uri).trim().toLowerCase(), e.id);
+	    }
+	    const uris = uniq.map(u => ({
+	        id: _abExistingUriIds.get(String(u).trim().toLowerCase()) || this._abGenerateServerId(),
+	        uri: u, type: _abUriType(u), attributes: {}, default: u === primary }));
 	    const def = uris.find(x => x.default) || uris[0];
 	    // Server requires a non-empty name; fall back to the URI username (still treated
 	    // as "no name" on read - round-trip consistent).
 	    const name = this._abFinalDisplayName(c) || this._abUriUsername(primary) || primary || 'Unknown';
 	    // dialog/presence: Sylk doesn't manage these but the server requires and overwrites
 	    // them, so carry an existing contact's values through unchanged; only new ones get defaults.
-	    const ab = this.state.connection && this.state.connection.addressbook;
-	    const existing = (ab && Array.isArray(ab.contacts)
-	        ? ab.contacts.find(s => s && s.id === id) : null)
-	        || this._abFindServerContactByUri(c);
 	    const _eh = (src) => (src && typeof src.policy === 'string')
 	        ? { policy: src.policy, subscribe: !!src.subscribe }
 	        : { policy: 'default', subscribe: false };
@@ -50629,7 +53263,8 @@ class Sylk extends Component {
 	    const id = this._abGenerateServerId();
 	    const primary = this._abLocalToServerUri(c.uri);
 	    const payload = this._abServerContactPayload(c, id);
-	    const ok = await this._abExec('addContact ' + primary, cb => ab.addContact(payload, cb));
+	    const ok = await this._abExec('addContact ' + primary, cb => ab.addContact(payload, cb),
+	        { kind: 'contact', id });
 	    if (ok) {
 	        c.remote_id = id;
 	        await this.saveSylkContact(c.uri, c, 'addressbook-migrate');
@@ -50765,6 +53400,10 @@ class Sylk extends Component {
 	                    if (this._abIsPurgeGroup(g.name)) continue;
 	                    const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
 	                    if (members.some(m => m.id === e.s.id) && members.filter(m => m.id !== e.s.id).length === 0) {
+	                        if (this._abGroupIsShared(g)) {
+	                            utils.timestampedLog('[ab] [heal] KEEP empty server group "' + this._abCapitalizeGroup(g.name) + '" id=' + g.id + ' kind="' + this._abGroupKind(g) + '" -- cross-client group, emptying it here is not a reason to delete it');
+	                            continue;
+	                        }
 	                        await this._abExec('deleteGroup ' + g.name + ' (emptied by migrate fold-dup delete)',
 	                            cb => ab.deleteGroup(g.id, cb));
 	                    }
@@ -50844,7 +53483,7 @@ class Sylk extends Component {
 	                if (c.remote_id && c.name && !this._abIsUriEcho(c.name, this._abLocalContactUris(c))
 	                    && this._abIsUriEcho(s.name, [newUri || c.uri, ...this._abServerUris(s)])) {
 	                    this._abStep('reconcile ' + reconcileIdx + ' :: match :: _abExec name-sync');
-	                    await this._abExec('updateContact ' + this._abLocalToServerUri(c.uri) + ' (name-sync)',
+	                    await this._abExecWhy('name-sync', 'updateContact ' + this._abLocalToServerUri(c.uri) + ' (name-sync)',
 	                        cb => ab.updateContact(this._abServerContactPayload(c, c.remote_id), cb));
 	                }
 	            } else {
@@ -50951,7 +53590,7 @@ class Sylk extends Component {
 	    // purge + rename + index server groups by canonical name (keep raw)
 	    const byName = {};
 	    for (const g of serverGroups) {
-	        if (this._abIsPurgeGroup(g.name)) {
+	        if (this._abIsPurgeGroup(g.name) && !this._abGroupIsShared(g)) {
 	            await this._abExec('deleteGroup ' + g.id + ' (' + g.name + ')', cb => ab.deleteGroup(g.id, cb));
 	            continue;
 	        }
@@ -50960,11 +53599,11 @@ class Sylk extends Component {
 	        const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
 	        const memberIds = new Set(members.map(m => m.id));
 	        if (canon !== (g.name || '')) {
-	            await this._abExec('updateGroup rename ' + g.id + ' → ' + canon, cb => ab.updateGroup({
+	            await this._abExecWhy('migrate-groups', 'updateGroup rename ' + g.id + ' → ' + canon, cb => ab.updateGroup({
 	                id: g.id, name: canon, attributes: g.attributes || {}, contacts: members,
 	            }, cb));
 	        }
-	        byName[canon.toLowerCase()] = { id: g.id, name: canon, attributes: g.attributes || {}, members, memberIds };
+	        byName[this._abGroupKey(g)] = { id: g.id, name: canon, attributes: g.attributes || {}, members, memberIds };
 	    }
 
 	    // Server -> local adoption (server authoritative): add each server group's tag to
@@ -50972,7 +53611,7 @@ class Sylk extends Component {
 	    for (const key of Object.keys(byName)) {
 	        const g = byName[key];
 	        if (key === 'conference') continue;
-	        const wantTag = this._abGroupNameToTag(g.name);
+	        const wantTag = this._abTagForGroup(g);
 	        // Flag tags are not groups — see the matching guard in the [ab] [get]
 	        // adoption loop. Without this, a stale 'Autoanswer' server group is
 	        // re-imported into contact.tags on every migration pass.
@@ -51033,12 +53672,12 @@ class Sylk extends Component {
 	        }
 
 	        if (!g) {
-	            const ok = await this._abExec('addGroup ' + groupName + ' (' + newMembers.length + ' members)',
-	                cb => ab.addGroup({ id: this._abGenerateServerId(), name: groupName, attributes: {}, contacts: newMembers }, cb));
-	            if (ok) byName[groupName.toLowerCase()] = { id: 'new', name: groupName, attributes: {}, members: newMembers, memberIds: new Set(newMembers.map(m => m.id)) };
+	            const ok = await this._abCreateGroup(ab, groupName, newMembers,
+	                newMembers.length + ' members');
+	            if (ok) byName[groupName.toLowerCase()] = { id: 'new', name: groupName, attributes: this._abGroupAttributesForName(groupName), members: newMembers, memberIds: new Set(newMembers.map(m => m.id)) };
 	        } else if (newMembers.length) {
 	            const contacts = [...g.members, ...newMembers];
-	            const ok = await this._abExec('updateGroup ' + g.name + ' (+' + newMembers.length + ' members)',
+	            const ok = await this._abExecWhy('migrate-groups', 'updateGroup ' + g.name + ' (+' + newMembers.length + ' members)',
 	                cb => ab.updateGroup({ id: g.id, name: g.name, attributes: g.attributes || {}, contacts }, cb));
 	            if (ok) { newMembers.forEach(m => { g.members.push(m); g.memberIds.add(m.id); }); }
 	        }
@@ -51065,6 +53704,11 @@ class Sylk extends Component {
 	    for (const key of Object.keys(byName)) {
 	        const g = byName[key];
 	        if (g && g.id && g.id !== 'new' && g.memberIds && g.memberIds.size === 0) {
+	            if (this._abGroupIsShared(g)) {
+	                utils.timestampedLog('[ab] [heal] KEEP empty server group "' + g.name + '" id=' + g.id
+	                    + ' kind="' + this._abGroupKind(g) + '" -- cross-client group, created empty and filled later');
+	                continue;
+	            }
 	            await this._abExec('deleteGroup ' + g.name + ' (empty)', cb => ab.deleteGroup(g.id, cb));
 	        }
 	    }
@@ -51165,6 +53809,17 @@ class Sylk extends Component {
 	_abRunReconcile = async (source) => {
 	    if (this._abReconcileRunning) { this._abRerunPending = true; return; }
 	    this._abReconcileRunning = true;
+	    const _reconcileStarted = Date.now();
+	    utils.timestampedLog('[ab] [lifecycle] applying the server addressbook (edge=' + source + ')');
+	    // No addressbook-update tick for anything this pass writes. A reconcile
+	    // is convergence work driven by data we just ADOPTED from the server —
+	    // name push-up, group membership, the self contact, the escrow repair —
+	    // and every other device reaches the same convergence from the same
+	    // document on its own load. Announcing it would mean device A's write
+	    // wakes device B, whose reconcile writes back, which wakes A: the exact
+	    // ping-pong the suppression exists to prevent. Only user-originated
+	    // edits (they run outside this pass) announce themselves.
+	    this._abNotifyThrottle.suppress();
 	    // Account/generation snapshot: if a logout or account switch lands
 	    // while this pass is awaiting, every step below must stop — the pass
 	    // belongs to a session that no longer exists (see syncGroupsTable's
@@ -51176,6 +53831,10 @@ class Sylk extends Component {
 	    // (recorded by _abExec); compared against the previous pass in the
 	    // finally block to drive the exponential backoff above.
 	    this._abPassWrites = [];
+	    // Set once this pass applied a freshly fetched document end to end:
+	    // the point where the addressbook has settled (contact avatars sync
+	    // from here, docs/CONTACT-AVATARS.md "When things run").
+	    let _appliedAuthoritative = false;
 	    try {
 	        if (!this._abReady()) return;
 	        // Sync-status + self reconcile run on ANY server data, including a cache
@@ -51204,6 +53863,7 @@ class Sylk extends Component {
 	            try { await this._abMigrateOnce(source); } catch (e) { /* keys still escrowed below */ }
 	            if (_stale()) { utils.timestampedLog('[ab] key escrow skipped — account changed mid-pass'); return; }
 	            await this._abEnsureSelfKeys(_escrowAcc);
+	            _appliedAuthoritative = true;
 	        }
 	    } catch (e) {
 	        console.log('[ab] _abRunReconcile error', e && e.message);
@@ -51223,7 +53883,13 @@ class Sylk extends Component {
 	            this._abWriteRepeat = 0;
 	        }
 	        this._abLastPassSig = _sig;
+	        utils.timestampedLog('[ab] [lifecycle] applied in ' + (Date.now() - _reconcileStarted)
+	            + 'ms, ' + (_sig ? _sig.split('|').length : 0) + ' write(s) issued');
+	        this._abNotifyThrottle.resume();
 	        this._abReconcileRunning = false;
+	        if (_appliedAuthoritative && !this._abRerunPending && !_stale()) {
+	            this._avatarOnAddressbookSettled();
+	        }
 	        if (this._abRerunPending) {
 	            this._abRerunPending = false;
 	            // One more pass, AFTER a delay — picks up anything that changed
@@ -51242,9 +53908,17 @@ class Sylk extends Component {
 
 	// _abServerDataAccount: account with ANY server data (cache or fresh), gates sync-status
 	// + self reconcile. _abAuthoritativeDataAccount: account with a fresh fetch, also needed for migration.
-	_abOnDataLoaded = () => { const a = this.state.accountId; this._abServerDataAccount = a; this._abAuthoritativeDataAccount = a; this._abLogPendingPut(a); this._abDumpHistory(); this._abMaybeRun('dataLoaded'); };
+	_abOnDataLoaded = () => {
+	    const a = this.state.accountId;
+	    const ab = this.state.connection && this.state.connection.addressbook;
+	    utils.timestampedLog('[ab] [lifecycle] snapshot FETCHED for ' + a + ' (authoritative): '
+	        + ((ab && ab.contacts) ? ab.contacts.length : '?') + ' contacts, '
+	        + ((ab && ab.groups) ? ab.groups.length : '?') + ' groups'
+	        + (this._abBootAt ? ' — ' + (Date.now() - this._abBootAt) + 'ms since launch' : ''));
+	    this._abServerDataAccount = a; this._abAuthoritativeDataAccount = a; this._abLogPendingPut(a); this._abDumpHistory(); this._abLogOrigins(a); this._abMaybeRun('dataLoaded');
+	};
 	_abOnDataCacheLoaded = () => { this._abServerDataAccount = this.state.accountId; utils.timestampedLog('[ab] [get] cache loaded'); this._abMaybeRun('dataCacheLoaded'); };
-	_abOnDataUpdated = () => { const a = this.state.accountId; this._abServerDataAccount = a; this._abAuthoritativeDataAccount = a; this._abMaybeRun('dataUpdated'); };
+	_abOnDataUpdated = () => { const a = this.state.accountId; this._abServerDataAccount = a; this._abAuthoritativeDataAccount = a; this._abLogOrigins(a); this._abMaybeRun('dataUpdated'); };
 	_abOnDataDeleted = (event) => this._abApplyServerDelete(event);
 
     newContact(uri, name=null, data={}) {
@@ -51542,6 +54216,23 @@ class Sylk extends Component {
 			!this._orphanReconcileDoneThisForeground &&
 			Array.isArray(contacts) &&
 			contacts.length > 0;
+		// iOS equivalent of the orphan reconcile: the springboard badge is
+		// also written by APNs (aps.badge) while JS is dead/suspended, so
+		// it can hold a value JS never set. If JS's own total didn't move
+		// (typically 0 -> 0 on cold start or resume) the diff gate below
+		// would return early and the stale badge would stick forever.
+		// Force one absolute setBadgeCount per foreground session.
+		const needsIosBadgeSync =
+			Platform.OS === 'ios' &&
+			this.state.appState === 'active' &&
+			!this._iosBadgeSyncedThisForeground &&
+			Array.isArray(contacts) &&
+			contacts.length > 0;
+		if (needsIosBadgeSync) {
+			this._iosBadgeSyncedThisForeground = true;
+			utils.timestampedLog('[badge] ios foreground sync: setBadgeCount', total_unread);
+			try { notifee.setBadgeCount(total_unread); } catch (e) { /* noop */ }
+		}
 		if (changedUris.length === 0 && !totalChanged && !needsOrphanReconcile) {
 			return;
 		}
@@ -51735,13 +54426,16 @@ class Sylk extends Component {
 
 		let uri = contactObject.uri;
 
-        // Always append @defaultDomain when the URI is bare — phone
-        // numbers included. Keeps the stored URI in the same shape the
-        // call wire / server history uses so addHistoryEntry's
-        // lookupContacts hits the existing row instead of minting a
-        // duplicate. See sanitizeContact for the matching rule on the
-        // newContact path.
-        if (uri.indexOf('@') === -1) {
+        // Append @defaultDomain to a bare URI -- but NEVER to a phone number.
+        // R4 stores those bare, and it is what the XCAP document holds.
+        //
+        // This used to qualify phone numbers too, so that the call/history
+        // path's wire form ("+…@domain") would hit the same row. That is now
+        // handled from the other end and in two places: sanitizeContact
+        // bare-ifies before saveSylkContact's dedup SELECT, so a wire-form
+        // save collapses onto the bare row, and lookupContact / getAllContactUris
+        // match every +/00 x bare/@domain variant.
+        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
             uri = uri + '@' + this.state.defaultDomain;
         }
 
@@ -51994,7 +54688,16 @@ class Sylk extends Component {
             if (Object.keys(_pend).length) this._abRecordPendingEdit(uri, _pend);
         } catch (e) { /* logging must never break a save */ }
 
-        this.saveSylkContact(uri, contact, action);
+        const _saved = this.saveSylkContact(uri, contact, action);
+
+        // Contact picture chosen or removed in the editor. Applied after the
+        // save, when the row has its final contact_id; the upload waits for
+        // the contact's server id (docs/CONTACT-AVATARS.md, "Contact editor").
+        if (contactObject.avatarChange && uri !== this.state.accountId) {
+            const _change = contactObject.avatarChange;
+            Promise.resolve(_saved).then(() => this._applyAvatarChange(contact, _change))
+                .catch((e) => utils.timestampedLog('[avatar] cannot apply the picture change: ' + (e && e.message)));
+        }
 
         // Enforce one-URI-per-contact: if this contact now holds a URI that
         // another contact had, take it away from the other (re-home it, or
@@ -52125,12 +54828,42 @@ class Sylk extends Component {
         } catch (e) { console.log('[ab] [uri-steal] error', e && e.message); }
     }
 
+    // True when the SQL row with this contact_id is a tombstone (deleted = 1).
+    // Tombstones are never loaded into memory, so the in-memory object a
+    // caller holds cannot tell.
+    async _isTombstoneId(contactId) {
+        if (!contactId) return false;
+        try {
+            const res = await this.ExecuteQuery(
+                'SELECT 1 FROM contacts WHERE account = ? AND contact_id = ? AND deleted = 1 LIMIT 1',
+                [this.state.accountId, contactId]);
+            return !!(res.rows && res.rows.length);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // A contact in the Deleted folder or the Graveyard never goes to the
+    // server (neither the contact nor its group membership); reviving one
+    // clears these flags, and the SQL row, before it is replicated.
+    async _abIsDeletedContact(contact) {
+        if (!contact) return false;
+        if (contact.deleted || contact.deletedTimestamp || contact.storagePurged
+                || await this._isTombstoneId(contact.id)) {
+            utils.timestampedLog('[ab] [put] skip ' + this._abNormalizeUri(contact.uri)
+                + ' — contact is deleted');
+            return true;
+        }
+        return false;
+    }
+
     async replicateContact(contact) {
 		try {
 			if (!this.state.addressBookServer) return;   // contacts are local-only on this deployment
 			const ab = this.state.connection && this.state.connection.addressbook;
 			if (!ab || !contact || !contact.uri) return;
 			if (this._abIsIpDomain(contact.uri)) return; // never put IP junk
+			if (await this._abIsDeletedContact(contact)) return;
 			const primary = this._abLocalToServerUri(contact.uri);
 			utils.timestampedLog('[ab] [put] replicate ' + this._abNormalizeUri(contact.uri)
 				+ ' attrs=' + JSON.stringify(this._abContactAttributes(contact))
@@ -52138,7 +54871,8 @@ class Sylk extends Component {
 				+ ' lp_keys=' + JSON.stringify(Object.keys(contact.localProperties || {})));
 			if (contact.remote_id) {
 				const payload = this._abServerContactPayload(contact, contact.remote_id);
-				await this._abExec('updateContact ' + primary, cb => ab.updateContact(payload, cb));
+				await this._abExec('updateContact ' + primary, cb => ab.updateContact(payload, cb),
+					{ kind: 'contact', id: contact.remote_id });
 			} else {
 				// No local link yet. If the server already has this URI, ADOPT
 				// it (update + persist its id) rather than POSTing a duplicate —
@@ -52148,12 +54882,14 @@ class Sylk extends Component {
 				if (existing && existing.id) {
 					contact.remote_id = existing.id;
 					const payload = this._abServerContactPayload(contact, existing.id);
-					await this._abExec('updateContact ' + primary + ' (link-existing)', cb => ab.updateContact(payload, cb));
+					await this._abExec('updateContact ' + primary + ' (link-existing)', cb => ab.updateContact(payload, cb),
+						{ kind: 'contact', id: existing.id });
 					await this.saveSylkContact(contact.uri, contact, 'addressbook-replicate-id');
 				} else {
 					const id = this._abGenerateServerId();
 					const payload = this._abServerContactPayload(contact, id);
-					const ok = await this._abExec('addContact ' + primary, cb => ab.addContact(payload, cb));
+					const ok = await this._abExec('addContact ' + primary, cb => ab.addContact(payload, cb),
+						{ kind: 'contact', id });
 					if (ok) {
 						contact.remote_id = id;
 						// persist remote_id with a non-replicating origin (no recursion)
@@ -52191,7 +54927,7 @@ class Sylk extends Component {
 
 			const groups = ab.groups || [];
 			const byName = {};
-			groups.forEach(g => { byName[this._abCapitalizeGroup(g.name).toLowerCase()] = g; });
+			groups.forEach(g => { byName[this._abGroupKey(g)] = g; });
 
 			// Member object for this contact (FULL contact object — the gateway
 			// requires a name on each group member).
@@ -52202,11 +54938,11 @@ class Sylk extends Component {
 				const canon = this._abCapitalizeGroup(dname);
 				const g = byName[dname];
 				if (!g) {
-					await this._abExec('addGroup ' + canon, cb => ab.addGroup({ id: this._abGenerateServerId(), name: canon, attributes: {}, contacts: [meMember] }, cb));
+					await this._abCreateGroup(ab, canon, [meMember], 'replicate');
 				} else {
 					const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
 					if (!members.some(m => m.id === rid)) {
-						await this._abExec('updateGroup ' + canon + ' (+1)', cb => ab.updateGroup({ id: g.id, name: this._abCapitalizeGroup(g.name), attributes: g.attributes || {}, contacts: [...members, meMember] }, cb));
+						await this._abExec('updateGroup ' + canon + ' (+1)', cb => ab.updateGroup({ id: g.id, name: this._abCapitalizeGroup(g.name), attributes: g.attributes || {}, contacts: [...members, meMember] }, cb), { kind: 'group', id: g.id });
 					}
 				}
 			}
@@ -52214,14 +54950,17 @@ class Sylk extends Component {
 			// Remove from groups it should no longer belong to. If that leaves
 			// the group with no members, delete the group entirely.
 			for (const g of groups) {
-				const gname = this._abCapitalizeGroup(g.name).toLowerCase();
+				const gname = this._abGroupKey(g);
 				const members = (Array.isArray(g.contacts) ? g.contacts : []).filter(m => m && m.id);
 				if (members.some(m => m.id === rid) && !desired.has(gname) && !this._abIsPurgeGroup(g.name)) {
 					const remaining = members.filter(m => m.id !== rid);
-					if (remaining.length === 0) {
-						await this._abExec('deleteGroup ' + g.name + ' (emptied)', cb => ab.deleteGroup(g.id, cb));
+					if (remaining.length === 0 && !this._abGroupIsShared(g)) {
+						await this._abExec('deleteGroup ' + g.name + ' (emptied)', cb => ab.deleteGroup(g.id, cb), { kind: 'group', id: g.id });
 					} else {
-						await this._abExec('updateGroup ' + g.name + ' (-1)', cb => ab.updateGroup({ id: g.id, name: this._abCapitalizeGroup(g.name), attributes: g.attributes || {}, contacts: remaining }, cb));
+						if (remaining.length === 0) {
+							utils.timestampedLog('[ab] [heal] KEEP empty server group "' + this._abCapitalizeGroup(g.name) + '" id=' + g.id + ' kind="' + this._abGroupKind(g) + '" -- cross-client group, emptying it here is not a reason to delete it');
+						}
+						await this._abExec('updateGroup ' + g.name + ' (-1)', cb => ab.updateGroup({ id: g.id, name: this._abCapitalizeGroup(g.name), attributes: g.attributes || {}, contacts: remaining }, cb), { kind: 'group', id: g.id });
 					}
 				}
 			}
@@ -52240,6 +54979,7 @@ class Sylk extends Component {
 		const account = this.state.accountId;
 		// Detect a transport/connection-level failure during replication via _abFailCount
 		// (only this contact's ops run here). XCAP failures arrive via dataUpdateFailed.
+		if (await this._abIsDeletedContact(contact)) return;
 		const _before = this._abFailCount || 0;
 		await this.replicateContact(contact);
 		await this.replicateGroup(contact);
@@ -52301,14 +55041,6 @@ class Sylk extends Component {
 		} catch (e) { console.log('[ab] _abFlushPendingPut error', e && e.message); }
     }
 
-    handleReplicateContact(json_contact) {
-		return;
-    }
-
-    async handleReplicateContactSync(json_contact, id, msg_timestamp) {
-		return;
-    }
-
     sanitizeContact(uri, contact) {
         //console.log('sanitizeContact', uri, contact);
 
@@ -52364,7 +55096,7 @@ class Sylk extends Component {
         // messages land on the exact contact URI. Only GENUINE
         // international numbers qualify (leading "+" after the 00→+ step
         // above); numeric conference-room usernames (e.g.
-        // "639578@videoconference.sip2sip.info") are NOT phone numbers
+        // "639578@conference.sip2sip.info") are NOT phone numbers
         // and keep their domain.
         //
         // The old code appended @domain to phone numbers too, to avoid
@@ -52376,7 +55108,14 @@ class Sylk extends Component {
         //   2. lookupContact / getAllContactUris match across every
         //      +/00 × bare/@domain variant, so the wire form still
         //      resolves to the bare contact.
-        const _isTel = isNumber && /^\+\d{6,}$/.test(username);
+        // R4 exactly: "user part starts + or 0" -> stored bare. The old test
+        // here was /^\+\d{6,}$/, which is narrower than the rule and narrower
+        // than utils.isPhoneNumber -- the predicate that lookupContact's
+        // +/00 x bare/@domain variants are gated on. A national number
+        // ("0206600957") therefore fell through to the else and was stored
+        // WITH a domain, while every lookup for it was generating bare
+        // variants. Same predicate on both sides or the two disagree.
+        const _isTel = isNumber;
         if (_isTel) {
             const at = uri.indexOf('@');
             if (at > -1) {
@@ -52678,7 +55417,7 @@ class Sylk extends Component {
     //     into appendInvitedParties when callers passed the raw
     //     participant URIs straight from the SDK roster.
     //   • bridge-pattern URIs — anything rooted in @conference.,
-    //     @videoconference., or with a display-name fragment of
+    //     or with a display-name fragment of
     //     "bridge" looks like a focus / mixer peer, not a person
     //     the user invited. Mirror ConferenceBox._isBridgeParticipant
     //     here so the SQL row never carries a bridge in
@@ -53907,8 +56646,13 @@ class Sylk extends Component {
 
         //console.log('addHistoryEntry', uri);
         
-        if (uri.indexOf('@') === -1) {
-            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
+            // A bare URI here is a conference room number -- EXCEPT when it is
+            // a phone number, which is stored bare on purpose (R4). Without
+            // this guard "+3180081867" became
+            // "+3180081867@<conference domain>" and was then looked up,
+            // saved and tagged as a room.
+            uri = uri + '@' + this.state.defaultConferenceDomain;
         }
 
 		// Collapse all guest/anonymous caller URIs (incl. @anonymous. and the
@@ -53935,7 +56679,7 @@ class Sylk extends Component {
 			// URL. Real cases seen off a SIP trunk: an IP-address domain
 			// (alice@192.168.1.5 - the domain regex demands an alphabetic TLD),
 			// a :port suffix, a leftover `sip:` prefix in the local part, and
-			// `room@videoconference.` when state.defaultDomain hasn't settled.
+			// `room@` when the conference domain hasn't settled.
 			// The old code pushed that null straight into `contacts` and the
 			// loop below died on `contact.conference = ...` with a FATAL
 			// uncaughtException ("Cannot set property 'conference' of null"),
@@ -53958,7 +56702,7 @@ class Sylk extends Component {
 			//
 			// Pass the FULL uri (and the account's configured conference
 			// domain) to isPhoneNumber so a conference room name that
-			// happens to start with 0 — e.g. `089577@videoconference.<your-domain>`
+			// happens to start with 0 — e.g. `089577@conference.<your-domain>`
 			// — is NOT mis-tagged 'tel'. Previously we passed only the
 			// bare local part, which dropped the domain context and let
 			// the regex flag any leading-zero room name as PSTN.
@@ -54046,7 +56790,7 @@ class Sylk extends Component {
      * them a chat message afterwards.
      *
      * Mirrors the URI normalisation that addHistoryEntry uses
-     * (bare local-part gets the videoconference. prefix) so the
+     * (bare local-part gets the conference domain) so the
      * lookup hits the same row both code paths target. Creates a
      * fresh contact row when none exists yet (e.g. an invitee who
      * is not already in the user's contacts) so the bump can land.
@@ -54055,8 +56799,13 @@ class Sylk extends Component {
         if (typeof uri !== 'string') return;
         uri = uri.trim().toLowerCase();
         if (!uri) return;
-        if (uri.indexOf('@') === -1) {
-            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
+            // A bare URI here is a conference room number -- EXCEPT when it is
+            // a phone number, which is stored bare on purpose (R4). Without
+            // this guard "+3180081867" became
+            // "+3180081867@<conference domain>" and was then looked up,
+            // saved and tagged as a room.
+            uri = uri + '@' + this.state.defaultConferenceDomain;
         }
         uri = utils.normalizeAnonymousUri(uri);
         if (this.state.accountSetting
@@ -54096,8 +56845,13 @@ class Sylk extends Component {
     }
 
     updateHistoryEntry(uri, callUUID, duration, mediaType = null, direction = null) {
-        if (uri.indexOf('@') === -1) {
-            uri = uri + '@videoconference.' + this.state.defaultDomain;
+        if (uri.indexOf('@') === -1 && !utils.isPhoneNumber(uri)) {
+            // A bare URI here is a conference room number -- EXCEPT when it is
+            // a phone number, which is stored bare on purpose (R4). Without
+            // this guard "+3180081867" became
+            // "+3180081867@<conference domain>" and was then looked up,
+            // saved and tagged as a room.
+            uri = uri + '@' + this.state.defaultConferenceDomain;
         }
 
         // Collapse guest/anonymous callers to the canonical contact, exactly
@@ -54760,7 +57514,7 @@ return (
                 // History is contact-only — server call history never inserts a
                 // new contact. This applies to conference rooms too: a call to a
                 // conference room that is NOT already in the client contacts list
-                // is skipped, we do NOT auto-create a local @videoconference
+                // is skipped, we do NOT auto-create a local conference
                 // contact for it. (Conference rooms already present as contacts
                 // fall through to the normal update path below, since
                 // lookupContact would have found them.)
@@ -54944,14 +57698,12 @@ return (
                 }
                 this.saveSylkContact(uri, _saveTarget, 'saveHistory');
 
-                // Conference rooms must exist 1:1 on XCAP (mangled to the
-                // @conference SIP-bridge domain). saveSylkContact does NOT
-                // auto-replicate 'saveHistory'-origin saves, so a room created
-                // here would stay local-only — giving more local
-                // @videoconference rooms than @conference entries on the
-                // server. Push it explicitly when it has no server link yet;
-                // replicateContact adopts an existing server room by URI
-                // (un-mangling on match) rather than creating a duplicate.
+                // Conference rooms must exist 1:1 on XCAP. saveSylkContact
+                // does NOT auto-replicate 'saveHistory'-origin saves, so a room
+                // created here would stay local-only — giving more local
+                // rooms than entries on the server. Push it explicitly when it
+                // has no server link yet; replicateContact adopts an existing
+                // server room by URI rather than creating a duplicate.
                 if (this._abIsConferenceUri && this._abIsConferenceUri(uri)
                         && !this._abIsConferenceAnomaly(uri)
                         && _saveTarget && !_saveTarget.remote_id) {
@@ -56115,6 +58867,13 @@ return (
                 />
                 </LocationSharingContext.Provider>
 
+                <AvatarConflictModal
+                    show={!!this.state.avatarConflict}
+                    items={this.state.avatarConflict ? this.state.avatarConflict.items : []}
+                    account={this.state.avatarConflict ? this.state.avatarConflict.account : null}
+                    onConfirm={this._avatarConflictConfirmed}
+                />
+
                 <ImportPrivateKeyModal
                     show={this.state.showImportPrivateKeyModal}
                     close={this.hideImportPrivateKeyModal}
@@ -56879,6 +59638,25 @@ return (
         this._abServerFetched = false;
         this._abLastPassSig = '';
         this._abWriteRepeat = 0;
+
+        // Addressbook-update: a pending tick or fetch belongs to the account we
+        // are leaving. Firing either one against the next account would
+        // announce its addressbook as changed, or fetch it for no reason.
+        if (this._abNotifyTimer) { clearTimeout(this._abNotifyTimer); this._abNotifyTimer = null; }
+        if (this._abFetchTimer) { clearTimeout(this._abFetchTimer); this._abFetchTimer = null; }
+        this._abHealedAccounts = new Set();
+        this._abNotifyThrottle = new abNotify.SendThrottle();
+        this._abFetchScheduler = new abNotify.FetchScheduler();
+        this._abFetchWanted = { contacts: new Set(), groups: new Set(), truncated: false };
+        this._abExecInFlight = 0;
+
+        // Contact avatars belong to the account we are leaving.
+        avatarStore.reset();
+        this._avatarBoundKey = null;
+        if (this.state.avatarConflict) {
+            try { this.state.avatarConflict.resolve({}); } catch (e) { /* never */ }
+            this.setState({ avatarConflict: null });
+        }
 
         // Reset the one-time "storage up to date" banner so the NEXT account's
         // first sync can show it again, and cancel a pending auto-hide timer so

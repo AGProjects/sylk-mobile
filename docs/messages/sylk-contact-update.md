@@ -1,5 +1,13 @@
 # `application/sylk-contact-update`
 
+> **Deprecated.** Replaced by
+> [`application/sylk-addressbook-update`](./sylk-addressbook-update.md), which
+> tells other devices to refetch the XCAP addressbook instead of replicating a
+> contact object as a second source of truth. Retirement order is in that
+> document, §10: Blink stops sending it in the release that starts sending the
+> tick, the receive branches go one release later, and the journal-replay skip
+> stays forever for pre-cut journal entries.
+
 Replicates a contact-book edit (add / rename / re-tag / remove) across the
 user's own devices.
 

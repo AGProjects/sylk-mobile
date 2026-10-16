@@ -82,6 +82,9 @@ import dayjs from 'dayjs';
 import styles from '../assets/styles/ContactsListBox';
 import Share from 'react-native-share';
 
+// See chatScrollStabilityProps.
+const CHAT_MAINTAIN_VISIBLE_POSITION = true;
+
 // Debug flag for componentDidUpdate's per-change diagnostic logs. These
 // fired on every relevant state transition (category/sort/order/selection
 // changes, date-filter recomputes, spinner stops). They're useful when
@@ -551,6 +554,10 @@ class ChatBox extends Component {
     }
 
     componentWillUnmount() {
+        if (this._chatScrollIdleTimer) {
+            clearTimeout(this._chatScrollIdleTimer);
+            this._chatScrollIdleTimer = null;
+        }
         if (this._loadEarlierTimer) {
             clearTimeout(this._loadEarlierTimer);
             this._loadEarlierTimer = null;
@@ -674,6 +681,9 @@ class ChatBox extends Component {
 		    // download/decrypt of visible attachments (e.g. ones that couldn't
 		    // decrypt before a key was imported).
 		    this._fileViewKicked = new Set();
+		    // Per-contact fetch bookkeeping (see the contactMessages block).
+		    this._staleContactMessages = undefined;
+		    this._categoryRequested = undefined;
 		    if (!nextProps.selectedContact && nextProps.selectedContact) {
 				console.log('Selected contact changed to', nextProps.selectedContact.uri);
             }
@@ -721,7 +731,34 @@ class ChatBox extends Component {
 		  // keeps it current through every add/update/delete path, so ChatBox
 		  // no longer reads the legacy per-uri map. The change-detection /
 		  // merge below still runs to preserve unchanged bubble refs.
-		  if (Array.isArray(nextProps.contactMessages)) {
+		  // A refetch (category chip, pinned toggle, date pill) is in flight:
+		  // the list we had when it started is stale. Any prop update that
+		  // still carries that same array must NOT repopulate the view --
+		  // it used to, via the INITIAL LOAD branch below, which showed the
+		  // previous filter's messages and raced the real result.
+		  let _skipContactMessages = false;
+		  let _freshFetchResult = false;
+		  if (this._staleContactMessages !== undefined) {
+			if (nextProps.contactMessages === this._staleContactMessages) {
+			  _skipContactMessages = true;
+			} else {
+			  _freshFetchResult = true;
+			  this._staleContactMessages = undefined;
+			}
+		  }
+
+		  if (_freshFetchResult && Array.isArray(nextProps.contactMessages)) {
+			// The fetched slice replaces the list outright (it may be empty,
+			// which previously left the spinner up until the 5 s fallback).
+			if (this._messagesLoadingTimer) {
+			  clearTimeout(this._messagesLoadingTimer);
+			  this._messagesLoadingTimer = null;
+			}
+			this.setState({
+			  renderMessages: nextProps.contactMessages,
+			  messagesLoading: false,
+			});
+		  } else if (!_skipContactMessages && Array.isArray(nextProps.contactMessages)) {
 			const oldMessages = this.state.renderMessages || [];
 
 			// contactMessages already arrives newest → oldest (DESC) from
@@ -765,8 +802,11 @@ class ChatBox extends Component {
 			  });
 
 			  this.props.confirmRead(uri, "initial_load");
-			  return;
-			}
+			  // No early return: the category / pinned handling and the
+			  // messagesCategoryFilter mirror at the end of this method must
+			  // still run, or a filter change arriving in the same props
+			  // update is skipped and the state mirror goes stale.
+			} else {
 
 			// Quick check for different length or IDs
 			const sameLength = oldMessages.length === newMessages.length;
@@ -893,6 +933,7 @@ class ChatBox extends Component {
 		
 			  //this.props.confirmRead(uri, "new_messages");
 			}
+			} // end: not initial load
 		  }
 		} else if (!nextProps.selectedContact) {
 		      //console.log('No selected contact anymore')
@@ -943,7 +984,9 @@ class ChatBox extends Component {
         }
 
         if ('messagesCategoryFilter' in nextProps) {
-			if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter && nextProps.selectedContact) {
+			if (nextProps.messagesCategoryFilter !== this.state.messagesCategoryFilter
+					&& nextProps.messagesCategoryFilter !== this._categoryRequested
+					&& nextProps.selectedContact) {
 				// Block back-to-back filter taps: while the previous
 				// getMessages is still resolving, ignore further chip
 				// taps. Without this guard a fast tap on (image →
@@ -1009,6 +1052,8 @@ class ChatBox extends Component {
 				// new category so the calendar pills re-derive
 				// from the right slice (e.g. only days that have
 				// images when the user picks the Image chip).
+				this._staleContactMessages = nextProps.contactMessages;
+				this._categoryRequested = nextProps.messagesCategoryFilter;
 				this._loadContactDateIndex(
 					nextProps.selectedContact,
 					nextProps.messagesCategoryFilter);
@@ -1058,6 +1103,7 @@ class ChatBox extends Component {
                 availableMonths: [],
                 availableDays: [],
             });
+            this._staleContactMessages = nextProps.contactMessages;
             this._loadContactDateIndex(
                 nextProps.selectedContact,
                 nextProps.messagesCategoryFilter,
@@ -3863,10 +3909,11 @@ class ChatBox extends Component {
 			(width, height) => {
 			  const aspectRatio =
 				width > 0 && height > 0 ? width / height : 1; // ✅ ensure finite ratio
-			  this.imageSizeCache[uri] = { width, height, aspectRatio };
 			  // Persist by stable message id so the memoized bubble re-renders
-			  // and the value survives the temp→final uri swap.
-			  this.recordImageAspect(id, aspectRatio);
+			  // and the value survives the temp→final uri swap. The size
+			  // cache is written by recordImageAspect too, so the change is
+			  // held back while the user is scrolling.
+			  this.recordImageAspect(id, aspectRatio, uri, width, height);
 			  // Backfill metadata dimensions if they were missing/wrong.
 			  this.maybePersistImageDimensions(currentMessage, aspectRatio);
 			},
@@ -4126,7 +4173,6 @@ class ChatBox extends Component {
 				priority: FastImage.priority.normal,
 			  }}
 			  resizeMode={FastImage.resizeMode.contain}
-			  onLoadStart={() => this.handleImageLoadStart(id)}
 			  // FastImage knows the image's real pixel dimensions once it
 			  // loads. Use them to set the bubble's aspectRatio — Image.getSize
 			  // (used above as the initial guess) is unreliable for local
@@ -4141,17 +4187,18 @@ class ChatBox extends Component {
 				const h = ne && ne.height;
 				if (w > 0 && h > 0) {
 					const ar = w / h;
-					this.imageSizeCache[uri] = { width: w, height: h, aspectRatio: ar };
 					// Persist by stable message id; recordImageAspect only
 					// setState's when the ratio actually changed (epsilon
-					// guarded), so this won't loop on repeat onLoads.
-					this.recordImageAspect(id, ar);
+					// guarded), so this won't loop on repeat onLoads. While
+					// the user is scrolling the reshape is deferred until
+					// the list is idle, so the bubble never resizes under
+					// a moving finger.
+					this.recordImageAspect(id, ar, uri, w, h);
 					// Write the corrected dimensions back to metadata + DB so
 					// future loads read the right shape (no first-paint flash).
 					this.maybePersistImageDimensions(currentMessage, ar);
 				}
 			  }}
-			  onLoadEnd={() => this.handleImageLoadEnd(id)}
 			/>
 		  </View>
 		</TouchableOpacity>
@@ -4208,7 +4255,7 @@ class ChatBox extends Component {
      *  send the reaction through). Returns true when any of:
      *    • no local private key is loaded (encryption gate),
      *    • we have a selected contact AND
-     *        - it's a videoconference room (the room's chat lives
+     *        - it's a conference room (the room's chat lives
      *          in ConferenceBox; from the contacts side it's a
      *          read-only history view),
      *        - search-messages mode is active,
@@ -4225,7 +4272,7 @@ class ChatBox extends Component {
         const hasPrivateKey = !!(this.props.keys && this.props.keys.private);
         if (keysLoaded && !hasPrivateKey) return true;
         if (this.state.selectedContact) {
-            if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) return true;
+            if (utils.isConferenceUri(this.state.selectedContact.uri)) return true;
             if (this.props.searchMessages) return true;
             if (this._selectedContactIsTel()) return true;
             // Anonymous / guest callers can't be messaged back (no inbox),
@@ -4604,7 +4651,7 @@ class ChatBox extends Component {
             // room chat, and shared-file bubbles aren't editable. Exclude those
             // actions from the contextual sheet for conference conversations.
             const _isConferenceThread = !!((this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri)
-                && (this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri).indexOf('@videoconference') > -1);
+                && utils.isConferenceUri((this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri)));
 
             // Reply — surfaced FIRST so it is the left-most / primary action in
             // the fast reaction bar (every message type, including location
@@ -4854,7 +4901,7 @@ class ChatBox extends Component {
             // below); a not-yet-downloaded one gets "Download". Still excluded:
             // conference rooms (no per-message resend) and live-location.
             const canResend =
-                (this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri).indexOf('@videoconference') === -1
+                !utils.isConferenceUri((this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri))
                 && !this.hideItem
                 && !isLiveLocation
                 && currentMessage.direction === 'outgoing';
@@ -5057,12 +5104,12 @@ class ChatBox extends Component {
                     // sylkrtc videoroom signalling. Force canDeleteRemote
                     // to false when the chat thread is a conference room
                     // so the "Also delete those sent for X" checkbox is
-                    // hidden entirely. Same `@videoconference` URI test
+                    // hidden entirely. Same utils.isConferenceUri test
                     // DeleteHistoryModal (line 338) and DeleteFileTransfers
                     // (line 298) use, so the three delete surfaces stay
                     // consistent.
                     const _isConferenceThread = (this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri)
-                        && (this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri).includes('@videoconference');
+                        && utils.isConferenceUri((this.props.selectedContact ? this.props.selectedContact.uri : this.props.targetUri));
                     const allMsgs = this.state.renderMessages || [];
                     const msgsById = new Map(allMsgs.map(m => [m._id, m]));
                     const canDeleteRemote = !_isConferenceThread
@@ -7977,7 +8024,11 @@ class ChatBox extends Component {
 				</View>
 			);
 
-        } else if (currentMessage.image) {
+        } else if (currentMessage.image || utils.isPendingInlineImage(currentMessage)) {
+            // Not downloaded/decrypted yet: draw a placeholder with the
+            // image's final size above the normal image footer, so the
+            // bubble height doesn't change when the file arrives.
+            const _pendingImg = !currentMessage.image;
             // The image-bubble footer hosts the kebab/menu, grid, and
             // fullscreen IconButtons over the bubble's background.
             // Pre-fix this picked colours by direction only — black
@@ -8012,7 +8063,7 @@ class ChatBox extends Component {
 					</View>
 				);
 			} else {
-				return (
+				const _imgFooter = (
 				<View style={[{flexDirection: 'row', alignItems: 'center',
 				justifyContent: 'space-between', // distribute items evenly
 				paddingHorizontal: 0}, styles.photoMenuContainer, extraStyles]}>
@@ -8103,7 +8154,17 @@ class ChatBox extends Component {
 						: null
 						}
 
-						{!isTransfering && !(currentMessage._id in this.state.imageGroups) ?
+						{!isTransfering && _pendingImg ?
+						<IconButton
+						  icon="download"
+						  size={18}
+						  onPress={() => this.onMessagePress(null, currentMessage)}
+						  style={{ padding: 0, margin: 0 }}
+						  iconColor={fontColor}
+						/>
+						: null}
+
+						{!isTransfering && !_pendingImg && !(currentMessage._id in this.state.imageGroups) ?
 						<IconButton
 						  icon="fullscreen"
 						  size={18}
@@ -8128,7 +8189,36 @@ class ChatBox extends Component {
 					  </View>
 				  </View>
 				</View>
-				); 			
+				);
+				if (!_pendingImg) {
+					return _imgFooter;
+				}
+				// Same box as renderMessageImage's single-image branch
+				// (width 100%, aspectRatio, marginBottom -5).
+				return (
+					<View style={{width: '100%'}}>
+						<View
+						  style={{
+							width: '100%',
+							aspectRatio: utils.reservedImageAspect(currentMessage.metadata),
+							marginBottom: -5,
+							justifyContent: 'center',
+							alignItems: 'center',
+							backgroundColor: 'rgba(127,127,127,0.15)',
+						  }}
+						>
+						  {isTransfering
+							? <ActivityIndicator size="small" color="#999" />
+							: <IconButton
+								icon="image-outline"
+								size={36}
+								onPress={() => this.onMessagePress(null, currentMessage)}
+								iconColor="#999"
+							  />}
+						</View>
+						{_imgFooter}
+					</View>
+				);
             }
         } else {
             if (currentMessage.metadata && currentMessage.metadata.filename) {
@@ -9099,21 +9189,33 @@ _loadContactDateIndex = async (contact, category, pinned) => {
     }
     const _catForLoad = (category !== undefined)
         ? category
-        : this.state.messagesCategoryFilter;
+        : (('messagesCategoryFilter' in this.props)
+            ? this.props.messagesCategoryFilter
+            : this.state.messagesCategoryFilter);
     const _pinnedForLoad = (pinned !== undefined)
         ? !!pinned
         : !!this.props.pinned;
+    const _seq = (this._dateIndexSeq = (this._dateIndexSeq || 0) + 1);
     try {
         const index = await this.props.getContactDateIndex(
             contact, _catForLoad, { pinned: _pinnedForLoad });
         if (this.ended) return;
+        // Latest request wins. Loads for different categories overlap
+        // (chip taps, contact switch); an older one landing last put the
+        // wrong category's counts on the pills (e.g. 2025 = 94 under
+        // Images when only 24 exist), so a pill could promise rows the
+        // SQL slice for this category doesn't have.
+        if (_seq !== this._dateIndexSeq) return;
         // Race guard: bail if the contact, category, OR pinned
         // mode has shifted since we kicked the load off. A fast
         // tap on (Pinned on → Pinned off) would otherwise let an
         // older "pinned-only" result win.
         const _cur = this.state.selectedContact;
         if (_cur && contact && _cur.uri !== contact.uri) return;
-        if (_catForLoad !== this.state.messagesCategoryFilter) return;
+        const _curCat = ('messagesCategoryFilter' in this.props)
+            ? this.props.messagesCategoryFilter
+            : this.state.messagesCategoryFilter;
+        if ((_catForLoad || null) !== (_curCat || null)) return;
         if (_pinnedForLoad !== !!this.props.pinned) return;
         this.setState({contactDateIndex: Array.isArray(index) ? index : []});
     } catch (e) {
@@ -9181,6 +9283,7 @@ _refetchForDateSelection = ({yearId, monthId, dayId}, opts) => {
         hasRange ? `range=${new Date(range.dateFrom * 1000).toISOString().slice(0,10)}..${new Date(range.dateTo * 1000).toISOString().slice(0,10)}` : 'no range (full window)',
         'category=', _cat || 'none',
         'pinned=', !!_pinned);
+    this._staleContactMessages = this.props.contactMessages;
     this.setState({renderMessages: [], messagesLoading: true});
     if (this._messagesLoadingTimer) {
         clearTimeout(this._messagesLoadingTimer);
@@ -9726,23 +9829,19 @@ scrollToMessage(id) {
     }
 
     this.setState(prev => {
-      const updatedRendered = new Set(prev.renderedMessageIds);
-      visibleIds.forEach(id => updatedRendered.add(id));
+      const prevVisible = prev.visibleMessageIds || [];
+      const sameVisible = prevVisible.length === visibleIds.length
+        && visibleIds.every((id, i) => prevVisible[i] === id);
+      const allRendered = visibleIds.every(id => prev.renderedMessageIds.has(id));
+      if (sameVisible && allRendered) return null; // no re-render
+      const updatedRendered = allRendered
+        ? prev.renderedMessageIds
+        : new Set(prev.renderedMessageIds);
+      if (!allRendered) visibleIds.forEach(id => updatedRendered.add(id));
       return { visibleMessageIds: visibleIds, renderedMessageIds: updatedRendered };
     });
   };
 
-  handleImageLoadStart = (id: string) => {
-    this.setState(prev => ({
-      imageLoadingState: { ...prev.imageLoadingState, [id]: true },
-    }));
-  };
-
-  handleImageLoadEnd = (id: string) => {
-    this.setState(prev => ({
-      imageLoadingState: { ...prev.imageLoadingState, [id]: false },
-    }));
-  };
 
   // Record the EXIF-corrected display aspect ratio for a message (keyed by
   // stable message id) so the bubble reshapes to hug the image. Only
@@ -9752,13 +9851,75 @@ scrollToMessage(id) {
   // as a prop and watched by the bubble's comparator, so old/received images
   // whose metadata holds the wrong (sensor) dimensions now self-correct on
   // load instead of only after opening fullscreen.
-  recordImageAspect = (id, aspectRatio) => {
+  // Keep the visible rows anchored when a NEWER item (lower index in the
+  // inverted list, i.e. below the viewport) changes height -- e.g. an image
+  // that finished loading after the user scrolled past it. The threshold
+  // keeps "stick to newest" behaviour when the user is already at the bottom.
+  // Set CHAT_MAINTAIN_VISIBLE_POSITION = false if it misbehaves (inverted
+  // lists + MVCP have had Android bugs).
+  chatScrollStabilityProps = Object.assign(
+    {
+      onScrollEndDrag: () => this.onChatScrollIdle(),
+      onMomentumScrollBegin: () => this.onChatScrollActive(),
+      onMomentumScrollEnd: () => this.onChatScrollIdle(),
+    },
+    CHAT_MAINTAIN_VISIBLE_POSITION
+      ? { maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 80 } }
+      : {}
+  );
+
+  recordImageAspect = (id, aspectRatio, uri = null, w = null, h = null) => {
     if (!id || !(aspectRatio > 0) || !isFinite(aspectRatio)) return;
-    const existing = this.state.imageAspectRatios && this.state.imageAspectRatios[id];
-    if (existing && Math.abs(existing - aspectRatio) <= 0.01) return; // no meaningful change
+    if (this._chatScrolling) {
+      // Don't reshape bubbles while the user is scrolling -- any height
+      // change shifts the list under their finger. Apply on scroll idle.
+      this._pendingAspects = this._pendingAspects || {};
+      this._pendingAspects[id] = { aspectRatio, uri, w, h };
+      return;
+    }
+    this._applyImageAspects({ [id]: { aspectRatio, uri, w, h } });
+  };
+
+  _applyImageAspects = (entries) => {
+    const current = this.state.imageAspectRatios || {};
+    const changed = {};
+    Object.keys(entries).forEach(id => {
+      const { aspectRatio, uri, w, h } = entries[id];
+      if (uri && w > 0 && h > 0) {
+        this.imageSizeCache[uri] = { width: w, height: h, aspectRatio };
+      }
+      const existing = current[id];
+      if (existing && Math.abs(existing - aspectRatio) <= 0.01) return; // no meaningful change
+      changed[id] = aspectRatio;
+    });
+    if (Object.keys(changed).length === 0) return;
     this.setState(prev => ({
-      imageAspectRatios: { ...prev.imageAspectRatios, [id]: aspectRatio },
+      imageAspectRatios: { ...prev.imageAspectRatios, ...changed },
     }));
+  };
+
+  // Scroll activity tracking for the aspect-ratio deferral above.
+  // Drag end is followed by momentum begin within a frame or two, so the
+  // idle timer bridges the gap and only fires once the list really stops.
+  onChatScrollActive = () => {
+    this._chatScrolling = true;
+    if (this._chatScrollIdleTimer) {
+      clearTimeout(this._chatScrollIdleTimer);
+      this._chatScrollIdleTimer = null;
+    }
+  };
+
+  onChatScrollIdle = () => {
+    if (this._chatScrollIdleTimer) clearTimeout(this._chatScrollIdleTimer);
+    this._chatScrollIdleTimer = setTimeout(() => {
+      this._chatScrollIdleTimer = null;
+      this._chatScrolling = false;
+      const pending = this._pendingAspects;
+      this._pendingAspects = {};
+      if (pending && Object.keys(pending).length) {
+        this._applyImageAspects(pending);
+      }
+    }, 400);
   };
 
   // When a decoded image turns out to have a different display aspect than
@@ -9998,6 +10159,77 @@ scrollToMessage(id) {
     // file list with on-disk presence, so we can tell why tiles show Download:
     // file genuinely absent (onDisk=false) vs present-but-no-thumbnail
     // (thumb=false, onDisk=true). Logged once per (contact, image-count).
+    // [filterUI] log: what the user sees when a category filter is on --
+    // the Year / Month / Day pills with their counters, the selected pill,
+    // and how many items the grid (or filtered chat list) actually holds.
+    // Logged only when any of that changes. `expected` is the counter on
+    // the deepest selected pill (or the sum of the year pills when no date
+    // is selected); MISMATCH flags a grid that disagrees with it.
+    _logFilterUi(images, videos, chatMessages) {
+        try {
+            const cat = this.state.messagesCategoryFilter;
+            if (!cat) {
+                this._filterUiSig = null;
+                return;
+            }
+            const fmt = (arr) => (arr || []).map(p => `${p.label}(${p.count || 0})`).join(' ') || '-';
+            const years  = this.state.availableYears  || [];
+            const months = this.state.availableMonths || [];
+            const days   = this.state.availableDays   || [];
+            const { dateYear, dateMonth, dateDay } = this.state;
+
+            const find = (arr, id) => (arr || []).find(p => p.id === id);
+            let selLabel = 'none';
+            let expected = years.reduce((a, p) => a + (p.count || 0), 0);
+            const selPill = (dateDay && find(days, dateDay))
+                || (dateMonth && find(months, dateMonth))
+                || (dateYear && find(years, dateYear));
+            if (dateDay || dateMonth || dateYear) {
+                selLabel = (dateDay ? 'day ' + dateDay
+                    : dateMonth ? 'month ' + dateMonth
+                    : 'year ' + dateYear);
+                expected = selPill ? (selPill.count || 0) : null;
+            }
+
+            let surface, shown;
+            if (cat === 'image') {
+                surface = 'image grid';
+                shown = images.length;
+            } else if (cat === 'video') {
+                surface = 'video grid';
+                shown = videos.length;
+            } else {
+                surface = 'chat list';
+                shown = (chatMessages || []).length;
+            }
+            const downloaded = cat === 'image'
+                ? images.filter(i => i.downloaded).length
+                : cat === 'video' ? videos.filter(v => v.downloaded).length : null;
+
+            const loading = !!this.state.messagesLoading;
+            const sig = [cat, fmt(years), fmt(months), fmt(days), selLabel, shown, downloaded, loading].join('|');
+            if (sig === this._filterUiSig) return;
+            this._filterUiSig = sig;
+
+            const status = loading
+                ? 'loading'
+                : (expected == null ? 'no pill for selection'
+                    : expected === shown ? 'OK' : 'MISMATCH');
+            const who = this.props.selectedContact && this.props.selectedContact.uri;
+            console.log('[filterUI]', 'contact=' + who, 'category=' + cat,
+                '| years:' + fmt(years),
+                '| months:' + fmt(months),
+                '| days:' + fmt(days),
+                '| selected:' + selLabel,
+                '| ' + surface + ': ' + shown + ' items'
+                    + (downloaded != null ? ' (' + downloaded + ' downloaded)' : '')
+                    + ', expected ' + (expected == null ? '?' : expected)
+                    + ' -> ' + status);
+        } catch (e) {
+            console.log('[filterUI] log failed', e && e.message);
+        }
+    }
+
     async _logImageGridDiag(images) {
         try {
             const sel = this.props.selectedContact && this.props.selectedContact.uri;
@@ -10099,7 +10331,7 @@ scrollToMessage(id) {
         if (noPrivateKeyBanner) {
             chatInputClass = this.noChatInputToolbar;
         } else if (this.state.selectedContact) {
-           if (this.state.selectedContact.uri.indexOf('@videoconference') > -1) {
+           if (utils.isConferenceUri(this.state.selectedContact.uri)) {
                chatInputClass = this.noChatInputToolbar;
            }
 
@@ -10540,6 +10772,8 @@ scrollToMessage(id) {
             }
 		}
 
+		this._logFilterUi(images, videos, chatMessages);
+
 		// Hardcoded approximation of the NavigationBar's rendered
 		// height. Fed into KeyboardAvoidingView's
 		// keyboardVerticalOffset on Android phones (isTablet=false),
@@ -10890,10 +11124,15 @@ scrollToMessage(id) {
 				  // a column View so the bar sits at the top
 				  // (natural height) and the grid takes the rest.
 				  // Same pattern as the chat-view branch below.
-				  <View style={{flex: 1}}>
+				  <View style={{flex: 1}}
+				    onLayout={(e) => { const l = e.nativeEvent.layout;
+				      console.log('[gridUI] image-grid outer layout', Math.round(l.width) + 'x' + Math.round(l.height)); }}>
 				    {this.renderDatePeriodBar()}
-				    <View style={{flex: 1}}>
+				    <View style={{flex: 1}}
+				      onLayout={(e) => { const l = e.nativeEvent.layout;
+				        console.log('[gridUI] image-grid inner layout', Math.round(l.width) + 'x' + Math.round(l.height), 'y=' + Math.round(l.y)); }}>
 				      <ThumbnailGrid
+					debugTag="image-grid"
 					images={images}
 					isLandscape={this.props.isLandscape}
 					numColumns={(this.props.isTablet || this.props.isLandscape) ? 3 : 2}
@@ -11232,10 +11471,12 @@ scrollToMessage(id) {
 				    // closeEmojiPicker call at the top of
 				    // onMessagePress for bubble-tap dismissal.
 				    onScrollBeginDrag: () => {
+				        this.onChatScrollActive();
 				        if (this.state.emojiPickerVisible) {
 				            this.closeEmojiPicker();
 				        }
 				    },
+				    ...this.chatScrollStabilityProps,
 				    // Pull-up-to-refresh at the bottom of the (inverted)
 				    // chat: the RefreshControl sits at the newest-message
 				    // end, so pulling up past the last message fires
@@ -11567,6 +11808,8 @@ scrollToMessage(id) {
 					onViewableItemsChanged: this.onViewableItemsChanged,
 					viewabilityConfig: this.viewabilityConfig,
 				    extraData: this.state.audioBubbleScrub,
+				    onScrollBeginDrag: this.onChatScrollActive,
+				    ...this.chatScrollStabilityProps,
 				  }}
                   messages={chatMessages}
                   renderInputToolbar={() => { return null }}
@@ -11672,7 +11915,7 @@ scrollToMessage(id) {
 			                The selected {plural} will be removed from this chat on this device.
 			              </Text>
 			              {this.state.selectedContact
-			                  && !(this.state.selectedContact.uri || '').includes('@videoconference') ? (
+			                  && !utils.isConferenceUri(this.state.selectedContact.uri || '') ? (
 			                <TouchableOpacity
 			                  onPress={() => this.setState({remoteDeleteMedia: !this.state.remoteDeleteMedia})}
 			                  style={{

@@ -13,16 +13,10 @@ import utils from '../utils';
 
 // Conference rooms ----------------------------------------------------------
 
-// Video conference room, e.g. `room@videoconference.example.com`.
-export function isVideoConferenceUri(uri) {
-    return !!uri && uri.indexOf('@videoconference') > -1;
-}
-
-// Audio-only conference room, e.g. `room@conference.example.com`. Distinct
-// from a video conference (matched above). Audio rooms don't accept inbound
-// file transfers, so voice memos can't be delivered to them.
-export function isAudioConferenceUri(uri) {
-    return !!uri && uri.indexOf('@conference') > -1;
+// Conference room, e.g. `room@conference.example.com`. Rooms don't accept
+// inbound file transfers, so voice memos can't be delivered to them.
+export function isConferenceUri(uri) {
+    return utils.isConferenceUri(uri);
 }
 
 // Anonymous / guest peers -----------------------------------------------------
@@ -79,13 +73,10 @@ export function canReceiveVoiceMemo(contact) {
         return false;
     }
     const uri = contact.uri;
-    if (isVideoConferenceUri(uri)) {
+    if (isConferenceUri(uri)) {
         return false;
     }
     if (isAnonymousUri(uri)) {
-        return false;
-    }
-    if (isAudioConferenceUri(uri)) {
         return false;
     }
     if (isTestContact(contact)) {
@@ -105,7 +96,7 @@ export function canShareLocationWith(contact) {
         return false;
     }
     const uri = contact.uri;
-    if (isVideoConferenceUri(uri)) {
+    if (isConferenceUri(uri)) {
         return false;
     }
     if (isAnonymousUri(uri)) {

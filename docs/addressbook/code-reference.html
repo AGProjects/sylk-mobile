@@ -23,21 +23,49 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </style>
 </head><body>
 <h1 id="sylk-mobile-addressbook---code-reference">Sylk Mobile Addressbook - Code Reference</h1>
-<p>Copyright (C) 2020-2026 AG Projects B.V. (<a href="https://www.ag-projects.com">https://www.ag-projects.com</a>)</p>
-<p>Implementation map for the addressbook sync layer. The companion document <a href="addressbook.html"><code>addressbook.html</code></a> explains the design and behavior; this one maps that behavior onto the code — the functions that implement it, where they live, and how they fit together. Section references like (Chapter 16) point back into the design doc.</p>
-<p>Everything described here lives in <strong><code>app/app.js</code></strong> on the root <code>App</code> component. The cross-device data model, server contract, and reconciliation rules are documented in <code>addressbook.html</code>; the client library surface (<code>connection.addressbook</code>, its getters and <code>data*</code> events) is provided by <strong>react-native-sylkrtc</strong> and is not part of this file.</p>
+<p>Copyright (C) 2020-2026 AG Projects B.V. (https://www.ag-projects.com)</p>
+<p>Implementation map for the addressbook sync layer. The companion document
+<a href="addressbook.html"><code>addressbook.html</code></a> explains the design and behavior; this one
+maps that behavior onto the code — the functions that implement it, where they
+live, and how they fit together. Section references like (Chapter 16) point back into
+the design doc. The last two sections map the same behavior in <strong>sylk-desktop</strong> and the
+<strong>Blink / python3-sipsimple</strong> changes it relies on (Chapter 27).</p>
+<p>Everything described here lives in <strong><code>app/app.js</code></strong> on the root <code>App</code>
+component, except the naming rules: the spelling of addresses, echo names, and
+group kinds live in <strong><code>app/addressbookRules.js</code></strong>. That file is pure, and
+sylk-desktop uses it verbatim (see <em>Shared rules file</em> below). The cross-device data model, server contract, and reconciliation
+rules are documented in <code>addressbook.html</code>; the client library surface
+(<code>connection.addressbook</code>, its getters and <code>data*</code> events) is provided by
+<strong>react-native-sylkrtc</strong> and is not part of this file.</p>
 <hr />
 <h2 id="naming-conventions">Naming conventions</h2>
 <ul>
-<li><strong><code>_ab*</code></strong> — every addressbook helper is prefixed <code>_ab</code> (e.g. <code>_abServerUris</code>, <code>_abMigrateGroups</code>). The prefix namespaces the layer inside the large <code>App</code> component and makes the addressbook surface greppable in one pass.</li>
-<li><strong><code>loadPhoneAddressBook</code>, <code>_abMigrateOnce</code>, <code>_abMigratePreview</code></strong> — the few non-<code>_ab</code> entry points keep the established <code>AddressBook</code> (capital <code>B</code>) spelling used elsewhere in the codebase (<code>addressBookContacts</code>, <code>kickUnifiedSearchAddressBookLoad</code>). The <code>data*</code> event handlers use the <code>_abOn*</code> prefix (<code>_abOnDataLoaded</code>, …) to match the <code>_on*</code> handler convention in the file.</li>
-<li><strong><code>R1</code>–<code>R6</code> tags in comments</strong> — several helpers carry an <code>Rn:</code> marker in their leading comment. These are the URI-normalization / junk rules (<code>addressbook.html</code> Chapter 3): <code>R1</code> IP-literal domain, <code>R3</code> URI-echo name, <code>R4</code> phone normalization, <code>R5</code> conference anomaly, <code>R6</code> conference-domain mangling.</li>
-<li><strong><code>[ab] ...</code> log prefix</strong> — all addressbook console output is tagged <code>[ab]</code> (with sub-tags such as <code>[ab] [get]</code>, <code>[ab] [put]</code>, <code>[ab] [queue]</code>, <code>[ab] [delete]</code>) so a sync can be followed in the metro log.</li>
+<li><strong><code>_ab*</code></strong> — every addressbook helper is prefixed <code>_ab</code> (e.g. <code>_abServerUris</code>,
+<code>_abMigrateGroups</code>). The prefix namespaces the layer inside the large <code>App</code>
+component and makes the addressbook surface greppable in one pass.</li>
+<li><strong><code>loadPhoneAddressBook</code>, <code>_abMigrateOnce</code>, <code>_abMigratePreview</code></strong>
+— the few non-<code>_ab</code> entry points keep the established <code>AddressBook</code> (capital
+<code>B</code>) spelling used elsewhere in the codebase (<code>addressBookContacts</code>,
+<code>kickUnifiedSearchAddressBookLoad</code>). The <code>data*</code> event handlers use the <code>_abOn*</code>
+prefix (<code>_abOnDataLoaded</code>, …) to match the <code>_on*</code> handler convention in the file.</li>
+<li><strong><code>R1</code>–<code>R6</code> tags in comments</strong> — several helpers carry an <code>Rn:</code> marker in
+their leading comment. These are the URI-normalization / junk rules
+(<code>addressbook.html</code> Chapter 3): <code>R1</code> IP-literal domain, <code>R3</code> URI-echo name, <code>R4</code> phone
+normalization, <code>R5</code> conference anomaly, <code>R6</code> conference-domain mangling.</li>
+<li><strong><code>[ab] ...</code> log prefix</strong> — all addressbook console output is tagged <code>[ab]</code>
+(with sub-tags such as <code>[ab] [get]</code>, <code>[ab] [put]</code>, <code>[ab] [queue]</code>,
+<code>[ab] [delete]</code>) so a sync can be followed in the metro log.</li>
 </ul>
 <hr />
 <h2 id="lifecycle-and-entry-points">Lifecycle and entry points</h2>
-<p>On connection setup the four client-library addressbook events are bound to the <code>_abOn*</code> handlers (and unbound first to avoid duplicate listeners):</p>
+<p>On connection setup the four client-library addressbook events are bound to
+the <code>_abOn*</code> handlers (and unbound first to avoid duplicate listeners):</p>
 <table>
+<colgroup>
+<col style="width: 28%" />
+<col style="width: 36%" />
+<col style="width: 36%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Event</th>
@@ -54,7 +82,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tr class="even">
 <td><code>dataCacheLoaded</code></td>
 <td><code>_abOnDataCacheLoaded</code></td>
-<td>library served a cached snapshot (e.g. account switch-back)</td>
+<td>library served a cached snapshot (e.g. account switch-back)</td>
 </tr>
 <tr class="odd">
 <td><code>dataUpdated</code></td>
@@ -75,6 +103,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </table>
 <h3 id="readiness-gate-and-dispatch">Readiness gate and dispatch</h3>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -84,7 +116,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tbody>
 <tr class="odd">
 <td><code>_abReady</code></td>
-<td>True only when the app is fully settled for the <strong>current</strong> account: account id set, connection ready, local contacts loaded <strong>and stamped for this account</strong>, <code>accounts.settings</code> committed for this account, and server data present for this account. Prevents one account's data leaking into another during a switch (Chapter 9).</td>
+<td>True only when the app is fully settled for the <strong>current</strong> account: account id set, connection ready, local contacts loaded <strong>and stamped for this account</strong>, <code>accounts.settings</code> committed for this account, and server data present for this account. Prevents one account’s data leaking into another during a switch (Chapter 9).</td>
 </tr>
 <tr class="even">
 <td><code>_abMaybeRun(source)</code></td>
@@ -108,9 +140,15 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 </tbody>
 </table>
-<p>The state fields <code>_abServerDataAccount</code> (any server data, cache or fresh) and <code>_abAuthoritativeDataAccount</code> (a fresh fetch arrived) are what the gate reads to tell a cache load apart from an authoritative one.</p>
+<p>The state fields <code>_abServerDataAccount</code> (any server data, cache or fresh) and
+<code>_abAuthoritativeDataAccount</code> (a fresh fetch arrived) are what the gate reads to
+tell a cache load apart from an authoritative one.</p>
 <h3 id="os-contacts-loader">OS contacts loader</h3>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -120,13 +158,29 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tbody>
 <tr class="odd">
 <td><code>loadPhoneAddressBook</code></td>
-<td>Permission-driven loader for the <strong>phone's OS contacts</strong> (react-native-contacts), deferred to explicit user intent (tapping Phonebook) so the OS permission prompt only appears then. Idempotent: skips work only when permission is already authorized <strong>and</strong> contacts are already fetched. Distinct from the server XCAP sync above.</td>
+<td>Permission-driven loader for the <strong>phone’s OS contacts</strong> (react-native-contacts), deferred to explicit user intent (tapping Phonebook) so the OS permission <strong>prompt</strong> only appears then. Idempotent: skips work only when permission is already authorized <strong>and</strong> contacts are already fetched. Distinct from the server XCAP sync above.</td>
+</tr>
+<tr class="even">
+<td><code>_abAdoptPhonebookNames()</code></td>
+<td>Startup read of the phonebook for name adoption, at the end of the heal. Prompting is user intent, <strong>reading is not</strong>: this calls <code>Contacts.checkPermission()</code> (which never shows a dialog) and reads only when already <code>authorized</code>. <code>abPermissionDenied</code> short-circuits ahead of even that check (Chapter 25.7).</td>
+</tr>
+<tr class="odd">
+<td><code>_abPhonebookRead</code></td>
+<td>Set only by a <strong>successful</strong> <code>getABContacts()</code>. <code>addresBookLoaded</code> is not a substitute — it is also raised on a denial, to stop the retry loop.</td>
+</tr>
+<tr class="even">
+<td><code>_abApplyPhotosToContacts()</code></td>
+<td>Applies phonebook photo, email <strong>and name</strong> over the loaded contacts. Guarded on <em>any</em> of the three maps being populated, not on <code>avatarPhotos</code> alone — cards with names and no thumbnails used to abort the pass and take the name adoption with it.</td>
 </tr>
 </tbody>
 </table>
 <hr />
 <h2 id="migration-workflow">Migration workflow</h2>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -171,6 +225,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <hr />
 <h2 id="live-replication-and-the-offline-queue">Live replication and the offline queue</h2>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -188,7 +246,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="odd">
 <td><code>_abServerContactPayload(c, id)</code></td>
-<td>Builds the server contact payload — <code>uris[]</code> (each with its own id), <code>default_uri</code>, preserved <code>dialog</code>/<code>presence</code>, name, and the <code>attributes</code> bag (Chapter 15). Mangles URIs back to the server <code>conference.X</code> form on the way out.</td>
+<td>Builds the server contact payload — <code>uris[]</code> (each with its own id), <code>default_uri</code> (the gateway stores it as <code>defaultUri</code>), preserved <code>dialog</code>/<code>presence</code>, name, and the <code>attributes</code> bag (Chapter 15). Mangles URIs back to the server <code>conference.X</code> form on the way out.</td>
 </tr>
 <tr class="even">
 <td><code>_abFlushPendingPut(account)</code></td>
@@ -204,7 +262,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="odd">
 <td><code>_abPendingPutLegacyKey(account)</code></td>
-<td>Legacy key <code>ab_pending_push.&lt;account&gt;</code>, read once and migrated forward so pre-rename writes aren't lost.</td>
+<td>Legacy key <code>ab_pending_push.&lt;account&gt;</code>, read once and migrated forward so pre-rename writes aren’t lost.</td>
 </tr>
 <tr class="even">
 <td><code>_abLoadPendingPut</code> / <code>_abSavePendingPut</code></td>
@@ -222,6 +280,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </table>
 <h3 id="server-call-plumbing">Server-call plumbing</h3>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -244,8 +306,32 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tbody>
 </table>
 <hr />
+<h2 id="shared-rules-file">Shared rules file</h2>
+<p><code>app/addressbookRules.js</code> holds every rule that must come out the same on every
+client (Chapter 25.1). <code>src/app/addressbookRules.js</code> in sylk-desktop is the same file;
+change it here and copy it there. <code>test_addressbook_rules.cjs</code> pins the spellings
+with vectors.</p>
+<ul>
+<li><strong>What the account supplies.</strong> <code>create(context)</code> binds the rules that depend on the
+account. <code>context</code> gives <code>defaultDomain</code>, <code>defaultConferenceDomain</code>, <code>pstnRules</code>
+and <code>onPstnCanon</code>, and each field is read at call time. <code>App._abRules</code> passes getters
+over <code>this.state</code>, plus <code>getEffectivePstnRules()</code> and <code>_abLogPstnCanon</code>.</li>
+<li><strong>What stays the same in <code>app.js</code>.</strong> The <code>_ab*</code> members listed in the tables below
+are one-line delegates to the module, so every call site is unchanged. The group
+tables (<code>_abGroupKinds</code>, <code>_abTagForKind</code>, <code>_abReservedIdForKind</code>,
+<code>_abReservedGroupKeys</code>, <code>_abNonGroupTags</code>, <code>_abAutoLocalGroups</code>,
+<code>_abDynamicLocalGroups</code>) are the module’s objects.</li>
+<li><strong>Phone-number helpers.</strong> <code>utils.isPhoneNumber</code>, <code>utils.stripTelScheme</code>,
+<code>utils.pstnWireUriToE164</code> and <code>utils.stripTrunkZeroAfterCountryCode</code> also
+delegate to the module. There is one copy of each.</li>
+</ul>
 <h2 id="uri-normalization-mangling-and-junk-rules">URI normalization, mangling, and junk rules</h2>
 <table>
+<colgroup>
+<col style="width: 45%" />
+<col style="width: 27%" />
+<col style="width: 27%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -324,6 +410,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <hr />
 <h2 id="contact--uri-resolution">Contact / URI resolution</h2>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -333,7 +423,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tbody>
 <tr class="odd">
 <td><code>_abServerUris(s)</code></td>
-<td>Unique lowercased list of every URI on a server contact (<code>default_uri</code> + <code>uris[]</code>), each run through <code>_abNormServerUri</code>.</td>
+<td>Unique canonical list of every URI on a server contact (the chosen default + <code>uris[]</code>), each run through <code>_abNormServerUri</code>.</td>
 </tr>
 <tr class="even">
 <td><code>_abLocalContactUris(c)</code></td>
@@ -341,7 +431,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="odd">
 <td><code>_abChosenDefaultUri(s)</code></td>
-<td>The server's flagged default URI, else the <code>uris[]</code> default, else <code>uris[0]</code>.</td>
+<td>The server’s <code>defaultUri</code> (<code>default_uri</code> also read), else the <code>uris[]</code> entry flagged default, else <code>_abBestUri</code> of <code>uris[]</code>. The gateway (<code>webrtcgateway/models/xcap.py</code>) accepts <code>default_uri</code> on input but only ever sends <code>defaultUri</code>, filled with <code>uris[0]</code> when the document names none; reading <code>default_uri</code> alone never saw it (Chapter 2).</td>
 </tr>
 <tr class="even">
 <td><code>_abBestUri(uris)</code></td>
@@ -356,6 +446,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <hr />
 <h2 id="display-name-resolution">Display name resolution</h2>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -365,7 +459,15 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tbody>
 <tr class="odd">
 <td><code>_abIsUriEcho(name, uri)</code></td>
-<td>R3: name carries no real info — empty, equals the URI, the URI without <code>@</code>, or the username.</td>
+<td>R3: name carries no real info — empty, equals the URI, the URI without <code>@</code>, the username, or any <code>+</code>/<code>00</code> <strong>phone variant</strong> of those. The variant arm is what stops <code>0034913336701</code> being pushed up as a name over <code>+34913336701</code>.</td>
+</tr>
+<tr class="even">
+<td><code>_abNameIsEcho(name, uri)</code></td>
+<td>The same test from the local contact’s side; an empty name counts as an echo, which is what makes adoption “into a hole” (Chapter 25.5).</td>
+</tr>
+<tr class="odd">
+<td><code>_abNameForContact(uri)</code></td>
+<td>The OS phonebook’s name for an address, tried against the URI, then every <code>_phoneNumberVariants</code> spelling, then the bare username.</td>
 </tr>
 <tr class="even">
 <td><code>_abWinningDisplayName(localName, serverName, uri)</code></td>
@@ -381,7 +483,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="odd">
 <td><code>_abConferenceName(name, uri)</code></td>
-<td>A conference room's display name is the room number (URI username).</td>
+<td>A conference room’s display name is the room number (URI username).</td>
 </tr>
 <tr class="even">
 <td><code>_abCapitalizeGroup(name)</code></td>
@@ -392,6 +494,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <hr />
 <h2 id="groups-tags-and-attributes">Groups, tags, and attributes</h2>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -401,7 +507,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <tbody>
 <tr class="odd">
 <td><code>_abTagToGroupName(tag)</code></td>
-<td>Reserved tag → server group name (<code>favorite → Favorites</code>, <code>blocked → Blocked</code>, <code>tel → Tel</code>, <code>chat → Messages</code>); custom tags pass through.</td>
+<td>Reserved tag → server group name (<code>favorite → Favorites</code>, <code>blocked → Blocked</code>, <code>tel → Tel</code>, <code>chat → Messages</code>); custom tags pass through. Note: <code>autoanswer</code> deliberately has <strong>no</strong> reserved group name — it is per-device and must never sync.</td>
 </tr>
 <tr class="even">
 <td><code>_abGroupNameToTag(name)</code></td>
@@ -421,7 +527,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="even">
 <td><code>_abNonGroupTags</code></td>
-<td>Set of per-contact flag tags excluded from group sync (<code>bypassdnd</code>, <code>muted</code>, <code>noread</code>, <code>history</code>, <code>caregiver</code>).</td>
+<td>Set of per-contact flag tags excluded from group sync (<code>bypassdnd</code>, <code>muted</code>, <code>noread</code>, <code>history</code>, <code>caregiver</code>, <code>autoanswer</code>, <code>phone</code>, <code>email</code>). <code>email</code> is here so no Email group is ever generated again (Chapter 24.5).</td>
 </tr>
 <tr class="odd">
 <td><code>_abDynamicLocalGroups</code></td>
@@ -429,29 +535,73 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="even">
 <td><code>_abAutoLocalGroups</code></td>
-<td>Auto-derived categories, never user groups (<code>messages</code>, <code>chat</code>, <code>calls</code>, <code>recent</code>).</td>
+<td>Auto-derived categories, never user groups (<code>messages</code>, <code>chat</code>, <code>calls</code>, <code>recent</code>). Superset of <code>_abDynamicLocalGroups</code>.</td>
 </tr>
 <tr class="odd">
+<td><code>_abGroupKinds</code></td>
+<td>The kinds this client understands: <code>calls</code>, <code>tel</code>, <code>blocked</code>, <code>conference</code>, <code>missed</code>, <code>favorites</code> (Chapter 5b).</td>
+</tr>
+<tr class="even">
+<td><code>_abTagForKind</code></td>
+<td>kind → the local tag that represents membership. Note the <strong>singular</strong> <code>favorite</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>_abReservedIdForKind</code></td>
+<td>kind → the id a group of that kind is CREATED with (<code>_calls</code>, <code>_tel</code>, <code>_blocked</code>, <code>_conference</code>, <code>_missed</code>, <code>_favorites</code>) — Chapter 5b.1.</td>
+</tr>
+<tr class="even">
+<td><code>_abReservedGroupKeys</code></td>
+<td>Reserved server id → reconcile key, including both spellings of Favorites (<code>favorites</code> and <code>_favorites</code>) so the migration can cross between them.</td>
+</tr>
+<tr class="odd">
+<td><code>_abGroupKey(g)</code></td>
+<td>The reconcile key for a server group: <strong>kind → reserved id → canonical name</strong>. What makes a rename survivable.</td>
+</tr>
+<tr class="even">
+<td><code>_abGroupIsShared(g)</code></td>
+<td><code>!!_abGroupKind(g)</code> — a kind means another client owns the group, so the heal must never delete it (Chapter 23).</td>
+</tr>
+<tr class="odd">
+<td><code>_abIsDeviceLocalGroup(key, g)</code></td>
+<td><code>_abAutoLocalGroups.has(key) &amp;&amp; !_abGroupKind(g)</code> — the negation that stopped this client deleting Blink’s Calls group.</td>
+</tr>
+<tr class="even">
+<td><code>_abIsDeviceLocalName(key)</code></td>
+<td>The same question for a group not on the server yet, where only the name can answer: create the categories we know a kind for, never the purely derived ones.</td>
+</tr>
+<tr class="odd">
+<td><code>_abCreateGroup(ab, name, members, why)</code></td>
+<td>Create a group, pinning the reserved id for its kind. Gates on a snapshot, then re-checks live <code>kind</code> and reserved id before writing, so two devices racing produce one group.</td>
+</tr>
+<tr class="even">
+<td><code>_abMigrateReservedIds(ab)</code></td>
+<td>Delete-and-re-create the special groups under their reserved ids. Bounded to three attempts and reads the <strong>live</strong> <code>ab.groups</code> each pass — a pre-stamp snapshot silently skips groups stamped in the same pass.</td>
+</tr>
+<tr class="odd">
+<td><code>_abApplyServerDelete(...)</code></td>
+<td>Applies a server group deletion. Ignores it when a surviving group shares the deleted group’s key: a fold is a merge, not a removal (Chapter 5b.2).</td>
+</tr>
+<tr class="even">
 <td><code>_abSeenGroupsKey(account)</code></td>
 <td>AsyncStorage key for the seen-groups baseline, <code>ab_seen_groups.&lt;account&gt;</code>.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>_abLoadSeenGroups</code> / <code>_abSaveSeenGroups</code></td>
 <td>Load/persist the set of server group names this device has seen (drives offline-delete inference, Chapter 7).</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><code>_abContactAttributes(c)</code></td>
 <td>The synced attribute subset of a local contact written to the server <code>attributes</code> bag.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><code>_abApplyServerAttrs(contact, s)</code></td>
 <td>Apply the server <code>attributes</code> onto a local contact — additive, tolerant of string/bool values (Chapter 6).</td>
 </tr>
-<tr class="odd">
-<td><code>_abRecordPendingEdit(uri, fields)</code></td>
-<td>Record an authoritative-field edit so an in-flight re-fetch doesn't revert it (Chapter 6, edit protection).</td>
-</tr>
 <tr class="even">
+<td><code>_abRecordPendingEdit(uri, fields)</code></td>
+<td>Record an authoritative-field edit so an in-flight re-fetch doesn’t revert it (Chapter 6, edit protection).</td>
+</tr>
+<tr class="odd">
 <td><code>_abEditProtected(uri, field, serverVal)</code></td>
 <td>True when adoption should skip a field because of a recent local edit still within <code>_abEditWindowMs</code> (30s).</td>
 </tr>
@@ -459,8 +609,14 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </table>
 <hr />
 <h2 id="pgp-key-save-self-contact">PGP key save (self contact)</h2>
-<p>The account keypair is carried on the self contact's <code>keys</code> attribute so it replicates across devices over XCAP (design: Chapter 22). The private key is symmetrically encrypted with the account password.</p>
+<p>The account keypair is carried on the self contact’s <code>keys</code> attribute so it replicates
+across devices over XCAP (design: Chapter 22). The private key is symmetrically encrypted
+with the account password.</p>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -478,7 +634,7 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="odd">
 <td><code>_abParseSelfKeys(selfServer)</code></td>
-<td>Parse the server self contact's <code>keys</code> attribute (JSON text) into an object, or null.</td>
+<td>Parse the server self contact’s <code>keys</code> attribute (JSON text) into an object, or null.</td>
 </tr>
 <tr class="even">
 <td><code>_abSelfKeysAttr</code></td>
@@ -492,8 +648,150 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </table>
 <p><code>changeSipPassword(newPassword)</code> calls <code>_abEnsureSelfKeys(account, { force: true, password: newPassword })</code> after the new password is committed locally, re-encrypting the saved record with the new password. The call is deferred 5s so the server commits the password before the contact update. It is best-effort: a failure is logged and does not fail the password change.</p>
 <hr />
+<h2 id="startup-repairs">Startup repairs</h2>
+<p>Every one of these has a counterpart in Blink desktop running the same rule; a
+repair only one client performs is undone by the other (Chapter 24).</p>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>_abCanonicalPstn(uri)</code></td>
+<td>Phone-number URI → bare E.164, with an 8-digit floor so short codes are left alone (Chapter 24.3).</td>
+</tr>
+<tr class="even">
+<td><code>_abApplyLeadingZeroRule(...)</code></td>
+<td>The trunk-zero-after-country-code rule, shared with desktop’s <code>pstn_apply_leading_zero_rule</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>_abLogPstnCanon(...)</code></td>
+<td>Prints what the canonicalisation changed.</td>
+</tr>
+<tr class="even">
+<td><code>_abServerConferenceUri(uri)</code></td>
+<td>Unconditional <code>videoconference.X</code> → <code>conference.X</code> at the server boundary; this client never uploads the other form (Chapter 24.1).</td>
+</tr>
+<tr class="odd">
+<td><code>_abCanonicalServerContact(s)</code></td>
+<td>Canonical URIs plus echo-name healing for one server contact — a room becomes its <strong>room number</strong>, not its whole address (Chapter 24.2).</td>
+</tr>
+<tr class="even">
+<td><code>_abNormalizePstnContacts(ab, sContacts)</code></td>
+<td>The generalised drift pass: PSTN URI, conference domain (compared by <strong>domain</strong>, not whole address), echoed name — one walk over the server contacts.</td>
+</tr>
+<tr class="odd">
+<td><code>_abFileIntoKindGroup(ab, kind, canonName, wanted, why)</code></td>
+<td>File contacts into a kinded group. The rule is derived from the URI, not from a tag, so it is self-correcting.</td>
+</tr>
+<tr class="even">
+<td><code>_abFileConferenceContacts(...)</code></td>
+<td>The conference case of the above. <strong>Repair before filing</strong> — the first version filed unrepaired <code>videoconference.</code> rows into Conference.</td>
+</tr>
+<tr class="odd">
+<td><code>_abRepairAddressNames()</code></td>
+<td>Local-only repair for rows whose name is the contact’s own <strong>full address</strong> (<code>gogo@sylk.link</code> on <code>gogo@sylk.link</code>). Nothing writes a name that way deliberately, so the shape is a reliable signature; self-limiting, since after the rewrite the name has no <code>@</code> left to match. Names that echo only the <em>username</em> (<code>harb</code>, <code>king</code>) are deliberately left alone (Chapter 25.5).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="origin-stamps">Origin stamps</h2>
+<p>Who changed an entry and when (Chapter 26). Pure logic in <strong><code>app/addressbookOrigin.js</code></strong>,
+pinned against Blink’s fingerprints by <code>test_addressbook_origin.cjs</code>.</p>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>_abInstallOriginStamping(ab)</code></td>
+<td>Wraps <code>addContact</code> / <code>updateContact</code> / <code>addGroup</code> / <code>updateGroup</code> on the addressbook instance, once. Reads the server’s copy first, then sends <code>abOrigin.stampPayload(...)</code>.</td>
+</tr>
+<tr class="even">
+<td><code>_abExecWhy(reason, label, fn, change)</code></td>
+<td><code>_abExec</code> with <code>modified_reason</code> set for exactly that write.</td>
+</tr>
+<tr class="odd">
+<td><code>_abWithReason(reason, fn)</code> / <code>_abCurrentWriteReason()</code></td>
+<td>The synchronous reason slot; falls back to the <code>_abCtx</code> sub-tag (<code>migrate</code>).</td>
+</tr>
+<tr class="even">
+<td><code>_abLogOrigins(account)</code></td>
+<td>On <code>dataLoaded</code> / <code>dataUpdated</code>: diff against <code>ab_origin_snapshot.&lt;account&gt;</code> and log <code>[ab] [origin]</code> lines. Serialised on <code>_abOriginChain</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>abOrigin.contactFingerprint</code> / <code>groupFingerprint</code></td>
+<td>The shared fingerprint (Chapter 26.3).</td>
+</tr>
+<tr class="even">
+<td><code>abOrigin.stampPayload(kind, payload, previous, opts)</code></td>
+<td>Stamp on a content change, carry the previous stamp otherwise; returns a copy.</td>
+</tr>
+<tr class="odd">
+<td><code>abOrigin.describeOrigin</code> / <code>diffDocument</code> / <code>formatChanges</code></td>
+<td>The receive side (Chapter 26.4).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="change-notifications">Change notifications</h2>
+<p><code>app/addressbookNotify.js</code> is the <code>application/sylk-addressbook-update</code> wire format and
+its throttles. sylk-desktop has the same file (Chapter 27.6).</p>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>abNotify.buildTick</code> / <code>parseTick</code> / <code>CONTENT_TYPE</code></td>
+<td>Tick payload out and in.</td>
+</tr>
+<tr class="even">
+<td><code>abNotify.SendThrottle</code> / <code>FetchScheduler</code></td>
+<td>Coalesce outgoing ticks; schedule the refetch a received tick asks for.</td>
+</tr>
+<tr class="odd">
+<td><code>_abNoteChange(change)</code></td>
+<td>Called by <code>_abExec</code> after a write the server confirmed, when the caller passed a <code>change</code>. Heals and copies pass none (Chapter 25.4).</td>
+</tr>
+<tr class="even">
+<td><code>_abArmNotify</code> / <code>_abFlushNotify</code> / <code>_abSendNotify(tick)</code></td>
+<td>Wait until <code>_abNotifySettled</code> (no write in flight, no reconcile running), then send the tick to the own account, <code>skipJournal</code>, <code>skipDisposition</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>handleAddressbookNotify(message)</code></td>
+<td>A tick from another device: parse, add its ids to <code>_abFetchWanted</code>, arm <code>_abFireNotifyFetch</code>. Ticks are dropped from the message paths and never stored.</td>
+</tr>
+</tbody>
+</table>
+<hr />
 <h2 id="recency-diagnostics-and-dumps">Recency, diagnostics, and dumps</h2>
 <table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>Function</th>
@@ -507,15 +805,15 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="even">
 <td><code>_abImportTimestamp</code></td>
-<td>Fixed historic date for contacts with no message history, so pure imports sort below people you've talked to.</td>
+<td>Fixed historic date for contacts with no message history, so pure imports sort below people you’ve talked to.</td>
 </tr>
 <tr class="odd">
 <td><code>_abDumpHistory()</code></td>
-<td>On authoritative load, snapshot the full server addressbook (contacts + groups + policies) to the account's private folder for recovery, and print the <code>[ab] CONTACTS</code> / <code>CONTACTS DIFF</code> diagnostic tables (Chapter 20).</td>
+<td>On authoritative load, snapshot the full server addressbook (contacts + groups + policies) to the account’s private folder for recovery, and print the <code>[ab] CONTACTS</code> / <code>CONTACTS DIFF</code> diagnostic tables (Chapter 20).</td>
 </tr>
 <tr class="even">
 <td><code>_abWriteDump(filename, text)</code></td>
-<td>Write a dump file under the account's dump dir.</td>
+<td>Write a dump file under the account’s dump dir.</td>
 </tr>
 <tr class="odd">
 <td><code>_abAccountDir(account)</code> / <code>_abDumpDir(account)</code></td>
@@ -523,22 +821,274 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 <tr class="even">
 <td><code>_abPurgeDumpDir(account)</code></td>
-<td>Remove the account's entire dump folder (on account delete).</td>
+<td>Remove the account’s entire dump folder (on account delete).</td>
 </tr>
 <tr class="odd">
 <td><code>_abPurgeLegacyDump()</code></td>
 <td>One-time cleanup of legacy dump locations.</td>
 </tr>
+<tr class="even">
+<td><code>_abDumpContactStore(source)</code></td>
+<td>Every row of the local <code>contacts</code> table after migration + heal + adoption, once per run. Reads <strong>SQL</strong>, not <code>state.allContacts</code>: a row that never reached memory is the one worth seeing. Echo names are flagged <code>(echo)</code>, unreplicated rows as <code>remote=&lt;local-only&gt;</code>. The <code>uris</code> column is a comma-separated string, not JSON (Chapter 25.8).</td>
+</tr>
+<tr class="odd">
+<td><code>[ab] [kind]</code> group dump</td>
+<td>Every server group with its members named, six per line, capped at 60. An unresolvable member id prints as <code>&lt;id&gt;</code>.</td>
+</tr>
 </tbody>
 </table>
 <hr />
 <h2 id="actual-workflow">Actual workflow</h2>
-<ol>
+<ol type="1">
 <li>Connection setup binds the <code>data*</code> events to the <code>_abOnData*</code> handlers.</li>
-<li>A snapshot arrives → <code>_abOnData*</code> records which account the data is for and calls <code>_abMaybeRun</code>.</li>
-<li><code>_abMaybeRun</code> checks <code>_abReady</code>; once the last readiness edge passes it runs <code>syncGroupsTable</code> + <code>applySelfContactFromServer</code>, and — only on authoritative data — <code>_abMigrateOnce</code>.</li>
-<li>The migration reconciles contacts and groups using the resolution (<code>_abFindServerContactByUri</code>, <code>_abServerUris</code>), normalization (<code>_abNormalizeUri</code>, the mangle helpers), name (<code>_abWinningDisplayName</code>), and group (<code>_abMigrateGroups</code>) helpers, writing through <code>_abServerContactPayload</code> / <code>_abPutLocalContactToServer</code> / <code>_abExec</code>.</li>
-<li>Later user edits replicate live via <code>_abReplicateToServer</code>; failed writes land in the AsyncStorage queue (<code>_abQueuePendingPut</code>) and are retried by <code>_abFlushPendingPut</code> on the next good sync.</li>
+<li>A snapshot arrives → <code>_abOnData*</code> records which account the data is for and
+calls <code>_abMaybeRun</code>.</li>
+<li><code>_abMaybeRun</code> checks <code>_abReady</code>; once the last readiness edge
+passes it runs <code>syncGroupsTable</code> + <code>applySelfContactFromServer</code>, and — only
+on authoritative data — <code>_abMigrateOnce</code>.</li>
+<li>The migration reconciles contacts and groups using the resolution
+(<code>_abFindServerContactByUri</code>, <code>_abServerUris</code>), normalization
+(<code>_abNormalizeUri</code>, the mangle helpers), name (<code>_abWinningDisplayName</code>), and group
+(<code>_abMigrateGroups</code>) helpers, writing through <code>_abServerContactPayload</code> /
+<code>_abPutLocalContactToServer</code> / <code>_abExec</code>.</li>
+<li>Later user edits replicate live via <code>_abReplicateToServer</code>; failed writes land in the
+AsyncStorage queue (<code>_abQueuePendingPut</code>) and are retried by
+<code>_abFlushPendingPut</code> on the next good sync.</li>
 </ol>
-<p>For the rules behind each step — server-authoritative precedence, dedup by lowest id, conference mangling, offline-delete inference, the empty-snapshot safety gate — see <a href="addressbook.html"><code>addressbook.html</code></a>.</p>
+<p>For the rules behind each step — server-authoritative precedence, dedup by
+lowest id, conference mangling, offline-delete inference, the empty-snapshot
+safety gate — see <a href="addressbook.html"><code>addressbook.html</code></a>.</p>
+<hr />
+<h2 id="sylk-desktop">sylk-desktop</h2>
+<p>sylk-desktop follows the same rules (Chapter 27). All files are in <code>src/app/</code>; each pure
+module has a standalone <code>test_*.cjs</code> in the repository root.</p>
+<h3 id="shared-and-account-files">Shared and account files</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>addressbookRules.js</code>, <code>addressbookOrigin.js</code>, <code>addressbookNotify.js</code></td>
+<td>Verbatim copies of the sylk-mobile files. Change them in sylk-mobile, then copy.</td>
+</tr>
+<tr class="even">
+<td><code>addressbookAccountRules.js</code></td>
+<td><code>addressbookRules.create()</code> bound to <code>config.domain</code>, <code>config.defaultConferenceDomain</code> and the effective PSTN rules. Also exports <code>getEffectivePstnRules</code>, <code>get/setReplaceLeadingZero</code>, <code>cleanReplaceLeadingZero</code>, <code>DEFAULT_PSTN_RULES</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>pstnPreferences.js</code></td>
+<td><code>load</code> / <code>save</code> / <code>clear</code> of the per-account <strong>Replace 0 with</strong> value (<code>pstnReplaceLeadingZero-&lt;account&gt;</code>). Edited in <code>components/PhoneNumbersModal.js</code> (⋮ menu → Phone numbers); <code>config.js</code> supplies <code>pstn.rules</code> (default <code>{replacePlus: '00'}</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="write-boundary-addressbookprovidertsx">Write boundary (<code>AddressbookProvider.tsx</code>)</h3>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>installOriginStamping(addressbook, agent)</code></td>
+<td>Wraps <code>addContact</code>, <code>updateContact</code>, <code>addGroup</code>, <code>updateGroup</code>, <code>deleteContact</code>, <code>deleteGroup</code>: build the payload (<code>contactPayload.forServer</code>), stamp it (<code>abOrigin.stampPayload</code>), and tell the notifier once the server answers.</td>
+</tr>
+<tr class="even">
+<td><code>withAddressbookReason(reason, fn)</code></td>
+<td>Sets <code>modified_reason</code> for the writes <code>fn</code> makes. Exposed on the ref as <code>withReason</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>loadOriginDeviceId()</code></td>
+<td>The persistent device id (<code>addressbookOriginDeviceId</code>).</td>
+</tr>
+<tr class="even">
+<td><code>logOrigins(addressbook, account)</code></td>
+<td><code>[ab] [origin]</code> lines for each fetched document, as <code>_abLogOrigins</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>observeDeletes(addressbook, account)</code></td>
+<td>Feeds each authoritative document to the tombstones.</td>
+</tr>
+<tr class="even">
+<td><code>scheduleStartupHeal</code> / <code>runStartupHeal</code> / <code>healWrite</code></td>
+<td>Once per account per run, <code>HEAL_SETTLE_MS</code> (15 s) after the first document, announcements suppressed: contact repairs, then kind-group filing. Each write times out after <code>HEAL_WRITE_TIMEOUT_MS</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>fileIntoKindGroups</code></td>
+<td>Files a contact this client created into Tel / Conference once the server has it.</td>
+</tr>
+<tr class="even">
+<td><code>flushQueue</code></td>
+<td>Replays the offline queue through <code>offlineQueue.decide</code>, reason <code>offline-queue</code>.</td>
+</tr>
+<tr class="odd">
+<td>ref additions</td>
+<td><code>withReason</code>, <code>adoptsDisplayName</code>, <code>isDeleted</code>, <code>tombstonesReady</code>, <code>isAddressbookUpdate</code>, <code>receiveAddressbookUpdate</code>; the <code>onContactsChanged</code> prop. Types in <code>types/Addressbook.ts</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="rule-modules">Rule modules</h3>
+<table>
+<colgroup>
+<col style="width: 73%" />
+<col style="width: 26%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>File / function</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>contactIndex.js</code> — <code>ContactIndex(rules)</code></td>
+<td>Map-like index keyed by <code>normServerUri</code> of every owned address. <code>add</code>, then <code>seal</code> orders owners lowest id first; <code>best(uri)</code> prefers the owner whose default it is (Chapter 16.1).</td>
+</tr>
+<tr class="even">
+<td><code>contactPayload.forServer(contact, existing, rules, {keepRealName})</code></td>
+<td>The server payload: canonical, de-duplicated addresses, server URI ids reused, <code>tel</code>/<code>sip</code> types (others kept), one default in <code>defaultUri</code>, dialog / presence / attributes carried from <code>existing</code>. An automatic write never replaces a real server name with an echo.</td>
+</tr>
+<tr class="odd">
+<td><code>contactPayload.nameReplacement(name, addresses, rules)</code></td>
+<td>Port of Blink’s <code>echoed_name_replacement</code> (Chapter 24.2): a room becomes its number, a number in another spelling becomes the number, an old spelling follows the address, a SIP contact named by its own full address is left alone, and the result must be no worse. <code>echoSpellings</code> lists the spellings it compares.</td>
+</tr>
+<tr class="even">
+<td><code>contactPayload.cachedRealName</code> / <code>adoptsDisplayName</code></td>
+<td>A display name is adopted only into a hole (Chapter 25.5).</td>
+</tr>
+<tr class="odd">
+<td><code>conversationContacts.js</code> — <code>skipReason(uri, {contacts, accountId, deleted})</code> / <code>claim</code></td>
+<td>Whether a conversation may create a contact: <code>no-address</code>, <code>bonjour</code>, <code>ip-literal</code>, <code>conference-anomaly</code>, <code>guest</code>, <code>anonymous</code>, <code>own-account</code>, <code>known</code>, <code>deleted</code>, <code>pending</code> (claimed in the last 30 s).</td>
+</tr>
+<tr class="even">
+<td><code>addressTombstones.js</code> — <code>use</code> / <code>load</code> / <code>observe</code> / <code>has</code> / <code>forgive</code></td>
+<td>Inferred deletes against the persisted seen-baseline (Chapter 7). The first document is a baseline; an empty document after a non-empty one is ignored (Chapter 11).</td>
+</tr>
+<tr class="odd">
+<td><code>kindGroups.js</code> — <code>kindsFor</code> / <code>findGroup</code> / <code>filingWrites</code> / <code>filingWritesForAll</code></td>
+<td>Kind from the URI; group found by kind → reserved id → name; a missing group is created under its reserved id.</td>
+</tr>
+<tr class="even">
+<td><code>addressbookNotifier.js</code> — <code>writeStarted</code> / <code>receive</code> / <code>isTick</code> / <code>suppress</code> / <code>resume</code> / <code>attach</code></td>
+<td>The desktop counterpart of <code>_abNoteChange</code> and <code>handleAddressbookNotify</code>, built on <code>addressbookNotify.js</code>. Refetches with <code>Addressbook.refresh()</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>conversationRemoves.js</code> — <code>decide</code> / <code>park</code> / <code>release</code> / <code>newestMessageMs</code></td>
+<td>Chapter 16.3: apply a remote remove only when the contact is gone; park a live remove up to <code>PARK_MS</code> (10 min); drop a journal remove for a live contact or one older than the newest message.</td>
+</tr>
+<tr class="even">
+<td><code>addressbookHeal.js</code> — <code>planContactRepairs</code> / <code>planFiling</code></td>
+<td>The startup heal plans; the provider executes them.</td>
+</tr>
+<tr class="odd">
+<td><code>offlineQueue.js</code> — <code>baseFor(addressbook, id)</code> / <code>decide(op, {current, contacts, rules, deviceId})</code></td>
+<td>Records the server copy’s fingerprint when an op is queued; on replay returns <code>send</code>, <code>applied</code>, <code>gone</code>, <code>overtaken</code> or <code>exists</code>. Old entries without a fingerprint replay only when no other device has stamped the contact.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="appjs"><code>app.js</code></h3>
+<table>
+<colgroup>
+<col style="width: 53%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Place</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>updateAddressbook</code></td>
+<td>Waits for <code>tombstonesReady</code>, then <code>addConversationContacts</code> through <code>conversationContacts.claim</code>.</td>
+</tr>
+<tr class="even">
+<td><code>incomingMessage</code> / <code>outgoingMessage</code> / <code>sendingMessage</code> / <code>syncConversations</code></td>
+<td>Drop addressbook ticks; <code>incomingMessage</code> honours one only from the own account. Also carries the incoming-message crash fix.</td>
+</tr>
+<tr class="odd">
+<td><code>remoteRemoveConversation</code> / <code>contactsChanged</code></td>
+<td>Route remote removes through <code>conversationRemoves</code>; release parked removes when contacts change.</td>
+</tr>
+<tr class="even">
+<td><code>originAgent</code> prop, <code>pstnPreferences</code> load / clear</td>
+<td>Agent string for the stamps; per-account PSTN preference lifecycle.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sylkrtcjs">sylkrtc.js</h3>
+<p>Edited in place in <code>node_modules/sylkrtc/lib/</code>, to be ported to the sylkrtc.js repo:</p>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Addition</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>Account.fetchAddressbook(cb)</code></td>
+<td>Public refetch over the guarded <code>_fetchAddressbook(cb)</code>.</td>
+</tr>
+<tr class="even">
+<td><code>Addressbook.refresh(cb)</code></td>
+<td>Refetch; the result arrives as an ordinary <code>dataLoaded</code>, <code>cb</code> is called once.</td>
+</tr>
+<tr class="odd">
+<td><code>sendMessage(..., {skipJournal, skipDisposition})</code></td>
+<td>Ticks are neither journalled nor acknowledged.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="blink-and-python3-sipsimple">Blink and python3-sipsimple</h2>
+<table>
+<colgroup>
+<col style="width: 53%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Where</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>sipsimple/account/xcap/__init__.py</code> — <code>applying_remote_document()</code> / <code>is_applying_remote_document()</code></td>
+<td>Thread-local flag set while a server document is applied. Every <code>XCAPManagerDid*</code> notification carries <code>data.remote</code>.</td>
+</tr>
+<tr class="even">
+<td><code>sipsimple/addressbook.py</code> — <code>_applying_remote_document</code>, <code>_remote_originated</code></td>
+<td>Enters the xcap flag and marks <code>_internal_save</code> / <code>_internal_delete</code> from a non-local originator.</td>
+</tr>
+<tr class="odd">
+<td>Blink <code>SMSWindowManager._abNoteXCAPChange</code></td>
+<td>Returns on <code>data.remote</code>, so a copy of another device’s change is not announced (Chapter 25.4).</td>
+</tr>
+<tr class="even">
+<td>Blink <code>AddressbookOrigin.py</code></td>
+<td>Stamps and fingerprints, byte-identical to <code>addressbookOrigin.js</code>; installed from <code>SIPManager</code>, reasons via <code>@AddressbookOrigin.with_reason</code>.</td>
+</tr>
+</tbody>
+</table>
+
 </body></html>

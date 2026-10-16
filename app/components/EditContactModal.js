@@ -11,26 +11,30 @@ import UserIcon from './UserIcon';
 import PlatformToggle from './PlatformToggle';
 import {Gravatar, GravatarApi} from '../gravatar';
 import {Keyboard} from 'react-native';
-import CryptoJS from "crypto-js";
 import Contacts from 'react-native-contacts';
+import { pgpKeyIds } from '../pgpkeys';
+import { launchImageLibrary } from 'react-native-image-picker';
+import { encodeAvatarBase64 } from '../avatarImage';
+import { avatarPhotoFor, avatarInfoFor, useAvatarVersion } from '../avatars';
 
 import containerStyles from '../assets/styles/ContainerStyles';
 import styles from '../assets/styles/ContentStyles';
 
-export function generateShortChecksum(publicKey) {
-  // Normalize key (important!)
-  const normalizedKey = publicKey
-    .replace(/\r\n/g, "\n") // normalize line endings
-    .trim();
-
-  // Hash with SHA-256
-  const hash = CryptoJS.SHA256(normalizedKey);
-
-  // Convert to hex
-  const hex = hash.toString(CryptoJS.enc.Hex);
-
-  // Return first 8 characters (32 bits)
-  return hex.substring(0, 8).toUpperCase();
+// The identity of a public key is the key's own OpenPGP key id -- the last
+// 16 hex of its fingerprint, which is a hash over the key packet itself.
+// This used to be a SHA-256 over the ARMOUR instead, which was ours alone:
+// it changed whenever the same key was written out differently (a restored
+// or re-exported key keeps the armour it arrived in), it matched nothing
+// any other OpenPGP tool shows, and it could not be compared against the
+// key ids an encrypted message names when it says who it was sealed to.
+// Blink shows this same id for the same key.
+export function publicKeyId(publicKey) {
+  if (!publicKey) {
+    return undefined;
+  }
+  const ids = pgpKeyIds(publicKey);
+  const primary = ids.find((k) => k.type === 'primary') || ids[0];
+  return primary ? primary.keyId : undefined;
 }
 
 const EditContactModal = ({
@@ -481,6 +485,87 @@ const EditContactModal = ({
     }
   }, [show]);
 
+  // Contact picture (docs/CONTACT-AVATARS.md, "Contact editor"). Only an
+  // explicit action in the editor counts as a change: choosing a picture or
+  // removing it. A phonebook / gravatar picture shown here is never
+  // uploaded. null = untouched, {action:'set', jpegBase64} or
+  // {action:'clear'}; applied by saveContactByUser after the save.
+  useAvatarVersion();
+  const [avatarChange, setAvatarChange] = useState(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState(null);
+  const avatarEditable = !!selectedContact && !myself && !publicKey;
+  const storedAvatar = selectedContact ? avatarPhotoFor(selectedContact) : null;
+  const storedAvatarInfo = selectedContact ? avatarInfoFor(selectedContact) : null;
+  const hasAvatar = avatarChange ? avatarChange.action === 'set' : !!storedAvatar;
+
+  useEffect(() => {
+    if (show) {
+      setAvatarChange(null);
+      setAvatarBusy(false);
+      setAvatarError(null);
+    }
+  }, [show]);
+
+  const pickAvatar = async () => {
+    if (!avatarEditable || avatarBusy) return;
+    setAvatarError(null);
+    let result;
+    try {
+      // The picker shrinks the photo first: decoding a full camera frame
+      // in JS would take seconds. 512 keeps the short side above 96 for
+      // anything but a panorama.
+      result = await launchImageLibrary({
+        mediaType: 'photo',
+        includeBase64: true,
+        maxWidth: 512,
+        maxHeight: 512,
+        quality: 0.9,
+        selectionLimit: 1,
+      });
+    } catch (e) {
+      setAvatarError('Cannot open the photo library');
+      return;
+    }
+    if (!result || result.didCancel) return;
+    if (result.errorCode) {
+      setAvatarError(result.errorMessage || 'Cannot open the photo library');
+      return;
+    }
+    const asset = result.assets && result.assets[0];
+    if (!asset || !asset.base64) return;
+    setAvatarBusy(true);
+    // let the spinner paint before the (synchronous) encode
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    try {
+      const jpegBase64 = encodeAvatarBase64(asset.base64);
+      setAvatarChange({ action: 'set', jpegBase64 });
+    } catch (e) {
+      console.log('[avatar] cannot encode the picked picture:', e && e.message);
+      setAvatarError('Cannot use this picture' + (e && e.message ? ': ' + e.message : ''));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const removeAvatar = () => {
+    if (!avatarEditable) return;
+    setAvatarError(null);
+    setAvatarChange({ action: 'clear' });
+  };
+
+  const _avatarCaption = () => {
+    if (avatarError) return avatarError;
+    if (avatarChange && avatarChange.action === 'set') return 'New picture, saved with the contact';
+    if (avatarChange && avatarChange.action === 'clear') return 'Picture removed when you save';
+    if (!storedAvatarInfo) return null;
+    if (storedAvatarInfo.source === 'server') {
+      const when = storedAvatarInfo.modified ? new Date(storedAvatarInfo.modified).toLocaleString() : null;
+      return 'Picture from ' + storedAvatarInfo.label + (when ? ', ' + when : '');
+    }
+    return storedAvatarInfo.label;
+  };
+
   // Reset all form fields whenever modal opens or props change
   useEffect(() => {
     if (show) {
@@ -733,6 +818,10 @@ const getTotalPrettyStorage = (entity) => {
     // the modal open so the user can put one back.
     if (!contact.uri) { return; }
 
+    if (avatarEditable && avatarChange) {
+      contact.avatarChange = avatarChange;
+    }
+
     saveContactByUser(contact, selectedContact);
 
     // Myself-only: validate-then-persist the mobile number. The
@@ -945,11 +1034,7 @@ const getTotalPrettyStorage = (entity) => {
   entity = myself ? 'all' : uri;
   
   const totalUsage = getTotalPrettyStorage(entity);
-  let checksum;
-  
-  if (publicKey) {
-      checksum = generateShortChecksum(publicKey);
-  } 
+  const keyId = publicKeyId(publicKey);
   
   return (
     <Modal
@@ -1061,7 +1146,23 @@ const getTotalPrettyStorage = (entity) => {
 					  zIndex: 10,
 					}}
 				  >
-					{selectedContact.photo || selectedContact.email ? (
+					<TouchableOpacity
+					  disabled={!avatarEditable || avatarBusy}
+					  onPress={pickAvatar}
+					  accessibilityLabel="Change contact picture"
+					>
+					{avatarBusy ? (
+					  <View style={{ width: 50, height: 50, alignItems: 'center', justifyContent: 'center' }}>
+						<ActivityIndicator />
+					  </View>
+					) : avatarChange && avatarChange.action === 'set' ? (
+					  <Image
+						source={{ uri: 'data:image/jpeg;base64,' + avatarChange.jpegBase64 }}
+						style={{ width: 50, height: 50, borderRadius: 25 }}
+					  />
+					) : avatarChange && avatarChange.action === 'clear' ? (
+					  <UserIcon size={50} identity={{ ...selectedContact, photo: null }} noStoredAvatar />
+					) : selectedContact.photo || storedAvatar || selectedContact.email ? (
 					  <UserIcon size={50} identity={selectedContact} />
 					) : (
 					  <Gravatar
@@ -1073,6 +1174,7 @@ const getTotalPrettyStorage = (entity) => {
 						style={{ width: 50, height: 50, borderRadius: 25 }}
 					  />
 					)}
+					</TouchableOpacity>
 				  </View>
 				) : null}
 
@@ -1101,6 +1203,25 @@ const getTotalPrettyStorage = (entity) => {
 				) : (
 				  <Text style={containerStyles.title}>{title}</Text>
 				)}
+				{avatarEditable ? (
+				  <View style={{ alignItems: 'center', marginBottom: 6 }}>
+				    <View style={{ flexDirection: 'row', justifyContent: 'center' }}>
+				      <Button compact mode="text" icon="image" disabled={avatarBusy} onPress={pickAvatar}>
+				        {hasAvatar ? 'Change picture' : 'Add picture'}
+				      </Button>
+				      {hasAvatar ? (
+				        <Button compact mode="text" icon="close" disabled={avatarBusy} onPress={removeAvatar}>
+				          Remove
+				        </Button>
+				      ) : null}
+				    </View>
+				    {_avatarCaption() ? (
+				      <Text style={{ fontSize: 11, color: avatarError ? '#c62828' : getModalColors().textSecondary || getModalColors().textPrimary }}>
+				        {_avatarCaption()}
+				      </Text>
+				    ) : null}
+				  </View>
+				) : null}
 
                 {publicKey ? (
                   <>
@@ -1162,7 +1283,7 @@ const getTotalPrettyStorage = (entity) => {
                       )}
                     </View>
 
-                    <Text style={styles.small}>Checksum: {checksum}</Text>
+                    <Text style={styles.small}>Key ID: {keyId}</Text>
 
                   </>
                 ) : (

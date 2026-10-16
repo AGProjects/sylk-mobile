@@ -2,6 +2,7 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import ThemedModalSurface from './ThemedModalSurface';
 import { Platform, Modal, View, ScrollView, Pressable, TouchableWithoutFeedback, StyleSheet, Dimensions } from 'react-native';
 import PropTypes from 'prop-types';
+import utils from '../utils';
 import { Text, Surface, Button, ActivityIndicator } from 'react-native-paper';
 
 import containerStyles from '../assets/styles/ContainerStyles';
@@ -15,9 +16,9 @@ const KINDS = [{ id: 'contacts', label: 'Contacts' }, { id: 'messages', label: '
 const MSG_CATS = [{ id: 'all', label: 'All' }, { id: 'text', label: 'Text' }, { id: 'links', label: 'Links' }, { id: 'location', label: 'Location' }];
 const FILE_CATS = [{ id: 'all', label: 'All' }, { id: 'image', label: 'Images' }, { id: 'audio', label: 'Audio' }, { id: 'video', label: 'Video' }, { id: 'other', label: 'Other' }];
 
-// Contact sub-filters: PSTN numbers (+NNNN@…) and conference rooms (@…videoconference…).
+// Contact sub-filters: PSTN numbers (+NNNN@…) and conference rooms.
 const isPstnUri = (uri) => /^\+\d+@/.test(String(uri || ''));
-const isConferenceUri = (uri) => /videoconference/i.test(String(uri || '').split('@')[1] || '');
+const isConferenceUri = (uri) => utils.isConferenceUri(String(uri || ''));
 
 const styles = StyleSheet.create({
   inner: { paddingHorizontal: 12, paddingBottom: 10 },
@@ -66,7 +67,7 @@ const ImportDataModal = (props) => {
   const [newContacts, setNewContacts] = useState([]);
   const [selectedContacts, setSelectedContacts] = useState(new Set());
   const [skipPstn, setSkipPstn] = useState(true);        // filter out +NNNN@…
-  const [skipConference, setSkipConference] = useState(true); // filter out @…videoconference…
+  const [skipConference, setSkipConference] = useState(true); // filter out conference rooms
   const [preview, setPreview] = useState(null); // { serverCount, newCount }
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);

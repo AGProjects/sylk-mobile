@@ -318,7 +318,7 @@ export default class CallManager extends events.EventEmitter {
         const atIdx = uri.indexOf('@');
         const local = atIdx > -1 ? uri.substring(0, atIdx) : uri;
         const domain = atIdx > -1 ? uri.substring(atIdx + 1) : '';
-        const isPstn = domain.indexOf('videoconference.') === -1
+        const isPstn = !utils.isConferenceUri(uri)
                        && !!utils.isPhoneNumber(local);
         if (!isPstn) {
             return {handle: uri, handleType: 'email'};

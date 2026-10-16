@@ -146,6 +146,7 @@ let HUGE_FILE_SIZE = 15 * 1000 * 1000;
 let ENCRYPTABLE_FILE_SIZE = 20 * 1000 * 1000;
 
 let polycrc = require('polycrc');
+const abRules = require('./addressbookRules');
 
 /**
  * Get the expected partial download file path for a RNBackgroundDownloader task.
@@ -1502,7 +1503,7 @@ function phoneAvatarLabel(uri) {
     // Conference room ids are all-digit (generateSillyName) but are never
     // phone numbers. They have their own group-icon avatar; make sure a
     // room can never be pulled into this branch by digit shape alone.
-    if (domain.indexOf('videoconference') > -1) {
+    if (isConferenceUri(uri)) {
         return null;
     }
     if (!isPhoneNumber(localPart)) {
@@ -1679,22 +1680,9 @@ function escapeHtml(text) {
  *
  * Anything that is not a tel: URI is returned untouched.
  */
+// Moved to addressbookRules.js, the rules file shared with sylk-desktop.
 function stripTelScheme(uri) {
-    if (typeof uri !== 'string') {
-        return uri;
-    }
-    if (!/^\s*tel:/i.test(uri)) {
-        return uri;
-    }
-    let value = uri.trim().replace(/^tel:(\/\/)?/i, '');
-    const semi = value.indexOf(';');
-    if (semi > -1) {
-        value = value.substring(0, semi);
-    }
-    value = value.replace(/%2b/gi, '+');
-    // Visual separators only — '+', digits and the dial codes '*'/'#' stay.
-    value = value.replace(/[\s\-.()]/g, '');
-    return value;
+    return abRules.stripTelScheme(uri);
 }
 
 /**
@@ -1794,135 +1782,34 @@ function cleanDialHandle(uri) {
     return collapsed !== null ? collapsed + domainPart : value;
 }
 
+// Moved to addressbookRules.js, the rules file shared with sylk-desktop.
 function pstnWireUriToE164(uri, rules) {
-    if (typeof uri !== 'string' || !uri) {
-        return uri;
-    }
-    const atIdx = uri.indexOf('@');
-    const localPart = atIdx > -1 ? uri.substring(0, atIdx) : uri;
-    const domainPart = atIdx > -1 ? uri.substring(atIdx) : '';
-
-    if (localPart.charAt(0) === '+') {
-        return uri;
-    }
-    if (!/^\d+$/.test(localPart)) {
-        return uri;
-    }
-
-    const configured = (rules && typeof rules.replacePlus === 'string')
-        ? rules.replacePlus.trim()
-        : '';
-    const codes = [];
-    if (configured) {
-        codes.push(configured);
-    }
-    if (codes.indexOf('00') === -1) {
-        codes.push('00');
-    }
-
-    for (let i = 0; i < codes.length; i++) {
-        const code = codes[i];
-        if (/^\d+$/.test(code)
-                && localPart.length > code.length
-                && localPart.indexOf(code) === 0) {
-            return '+' + localPart.substring(code.length) + domainPart;
-        }
-    }
-    return uri;
+    return abRules.pstnWireUriToE164(uri, rules);
 }
 
+// Moved to addressbookRules.js, the rules file shared with sylk-desktop.
 function stripTrunkZeroAfterCountryCode(uri, rules) {
-    if (typeof uri !== 'string' || !rules) {
-        return uri;
-    }
-
-    const replaceLeadingZero = typeof rules.replaceLeadingZero === 'string'
-        ? rules.replaceLeadingZero.trim()
-        : '';
-    if (!replaceLeadingZero) {
-        return uri;
-    }
-
-    const accessCode = (typeof rules.replacePlus === 'string' && rules.replacePlus)
-        ? rules.replacePlus
-        : '00';
-
-    let countryCode = null;
-    if (replaceLeadingZero.indexOf(accessCode) === 0) {
-        countryCode = replaceLeadingZero.substring(accessCode.length);
-    } else if (replaceLeadingZero.charAt(0) === '+') {
-        countryCode = replaceLeadingZero.substring(1);
-    } else if (replaceLeadingZero.indexOf('00') === 0) {
-        countryCode = replaceLeadingZero.substring(2);
-    }
-
-    if (!countryCode || !/^\d{1,3}$/.test(countryCode)) {
-        return uri;
-    }
-
-    if (countryCode === '39') {
-        return uri;
-    }
-
-    const atIdx = uri.indexOf('@');
-    const localPart = atIdx > -1 ? uri.substring(0, atIdx) : uri;
-    const domainPart = atIdx > -1 ? uri.substring(atIdx) : '';
-
-    // Both international spellings the app can be handed: the canonical
-    // '+31…' it keeps in state / history, and the '0031…' wire form the
-    // replacePlus rule produces (or that a web page wrote directly).
-    const prefixes = ['+' + countryCode];
-    if (prefixes.indexOf(accessCode + countryCode) === -1) {
-        prefixes.push(accessCode + countryCode);
-    }
-    if (prefixes.indexOf('00' + countryCode) === -1) {
-        prefixes.push('00' + countryCode);
-    }
-
-    for (let i = 0; i < prefixes.length; i++) {
-        const prefix = prefixes[i];
-        const tail = localPart.substring(prefix.length + 1);
-        if (localPart.indexOf(prefix + '0') === 0 && /^\d+$/.test(tail)) {
-            return prefix + tail + domainPart;
-        }
-    }
-
-    return uri;
+    return abRules.stripTrunkZeroAfterCountryCode(uri, rules);
 }
 
+// Moved to addressbookRules.js, the rules file shared with sylk-desktop.
 function isPhoneNumber(uri, conferenceDomain) {
-    // A tel: URI is a phone number wearing a scheme. Unwrap it first so
-    // every caller of this detector (the PSTN pre-flight gate, the 'tel'
-    // auto-tag, normalizeUri below) agrees that tel:+31612345678 IS a
-    // phone number.
-    uri = stripTelScheme(uri);
-    let username = uri;
-    let domain = '';
-    if (uri.indexOf('@') > -1) {
-        const _parts = uri.split('@');
-        username = _parts[0].trim();
-        domain = (_parts[1] || '').trim().toLowerCase();
-    }
-    // Conference URIs are NEVER phone numbers, even when the room
-    // name is all digits or starts with a leading 0. We can ONLY
-    // know it's a conference if the caller tells us which domain
-    // the account's conference bridge lives on — substrings like
-    // 'conference.' aren't a reliable signal (e.g. a vanity domain
-    // like conference.example.com is not necessarily a Sylk
-    // conference bridge). When the caller passes the account's
-    // configured `defaultConferenceDomain` here, we compare the
-    // URI's domain to it (case-insensitively) and short-circuit
-    // to false. Callers that don't have the domain handy just
-    // omit it and we fall back to the legacy regex.
-    if (conferenceDomain && domain && domain === String(conferenceDomain).toLowerCase()) {
-        return false;
-    }
-    // Allow the human-friendly separators people type or paste inside a
-    // number — spaces, dashes, underscores and parentheses — so forms
-    // like '+1-313-1313', '+1313_1313' and '+1 313 1313' are all still
-    // recognised as phone numbers (normalizeUri then strips them to the
-    // canonical digits).
-    return username.match(/^(\+|0)([\d\-\(\)_\s]+)$/);
+    return abRules.isPhoneNumber(uri, conferenceDomain);
+}
+
+// A conference room URI: its host is the account's configured
+// defaultConferenceDomain, or (when the caller doesn't have it) any
+// conference.* host.
+function isConferenceUri(uri, conferenceDomain) {
+    if (typeof uri !== 'string') return false;
+    const at = uri.indexOf('@');
+    if (at === -1) return false;
+    let dom = uri.substring(at + 1).trim().toLowerCase();
+    const semi = dom.indexOf(';');
+    if (semi > -1) dom = dom.substring(0, semi);
+    if (!dom) return false;
+    if (conferenceDomain && dom === String(conferenceDomain).toLowerCase()) return true;
+    return dom.startsWith('conference.');
 }
 
 /* Split the address shape check into a strict ASCII form for SIP URIs and a
@@ -2005,6 +1892,28 @@ function isUsableContactAddress(value, defaultDomain) {
     const qualified = c.indexOf('@') === -1 ? c + '@' + (defaultDomain || '') : c;
     if (isSipAddress(qualified)) return true;
     return !!parseSylkConferenceUrl(c);
+}
+
+// A file-transfer message for an image that is not yet on disk / decrypted,
+// so sylk2GiftedChat has not set `image` on it yet. These are rendered as a
+// placeholder of the image's FINAL size (see reservedImageAspect) instead of a
+// short file row, so the bubble doesn't grow by hundreds of pixels when the
+// download completes -- which made the chat jump while the user scrolled.
+function isPendingInlineImage(msg) {
+    if (!msg || msg.image || msg.video || msg.audio) return false;
+    const md = msg.metadata;
+    if (!md || !md.filename || md.preview || md.error) return false;
+    return isImage(md.filename, md.filetype);
+}
+
+// Aspect ratio used for the reserved image box. Must match the first-render
+// ratio in ChatBox.renderMessageImage (metadata dims, else 1:1).
+function reservedImageAspect(md) {
+    if (md && md.width > 0 && md.height > 0) {
+        const ar = md.width / md.height;
+        if (isFinite(ar) && ar > 0) return ar;
+    }
+    return 1;
 }
 
 function isImage(filename, filetype=null) {
@@ -2690,6 +2599,7 @@ exports.isEmailAddress = isEmailAddress;
 exports.isSipAddress = isSipAddress;
 exports.isUsableContactAddress = isUsableContactAddress;
 exports.isPhoneNumber = isPhoneNumber;
+exports.isConferenceUri = isConferenceUri;
 exports.stripTelScheme = stripTelScheme;
 exports.stripTrunkZeroAfterCountryCode = stripTrunkZeroAfterCountryCode;
 exports.pstnWireUriToE164 = pstnWireUriToE164;
@@ -2697,6 +2607,8 @@ exports.cleanDialHandle = cleanDialHandle;
 exports.collapsedPhoneNumber = collapsedPhoneNumber;
 exports.phoneAvatarLabel = phoneAvatarLabel;
 exports.isImage = isImage;
+exports.isPendingInlineImage = isPendingInlineImage;
+exports.reservedImageAspect = reservedImageAspect;
 exports.isAudio = isAudio;
 exports.isVideo = isVideo;
 exports.titleCase = titleCase;

@@ -49,9 +49,11 @@ without decrypting it.
 | [`application/sylk-message-metadata`](./sylk-message-metadata.md) | both | yes | Out-of-band metadata about another message ("consumed", per-contact toggles, audio waveform peaks, where a call recording belongs). Also carried location ticks before they moved to their own type |
 | [`application/sylk-location-sharing`](./sylk-location-sharing-v2.md) | both | coords only | One-shot / live / meet-me location sharing. Cleartext lifecycle envelope in `metadata`, PGP-encrypted coordinates in `content`. Current wire is **[v2](./sylk-location-sharing-v2.md)**; **[v1](./sylk-location-sharing-v1.md)** (whole envelope inside `content`) is still accepted on receive |
 | [`application/sylk-live-location`](./sylk-live-location.md)   | local | n/a | Synthetic UI bubble — never sent on the wire           |
-| [`application/sylk-contact-update`](./sylk-contact-update.md) | self | yes | Replicate contact edits across own devices             |
+| [`application/sylk-contact-update`](./sylk-contact-update.md) | self | yes | **Deprecated** (see `sylk-addressbook-update`) — replicate contact edits across own devices |
+| [`application/sylk-addressbook-update`](./sylk-addressbook-update.md) | self | no | "The server addressbook changed, refetch it" — carries `contactIds` / `groupIds`, never journalled, never stored |
 | [`application/sylk-message-remove`](./sylk-message-remove.md) | both | no  | Delete a single message everywhere                     |
 | [`application/sylk-conversation-remove`](./sylk-conversation-remove.md) | both | no | Delete an entire conversation                  |
+| [`application/sylk-messages-bulk-delete`](./sylk-messages-bulk-delete.md) | self | no | Delete by criteria (type, action, contact, period) on all own devices; sent as `application/sylk-api-messages-bulk-delete` |
 | [`application/sylk-conversation-read`](./sylk-conversation-read.md) | self | no | Mark a conversation as read on own devices             |
 | [`message/imdn`](./imdn.md)               | both      | no        | Delivery / read / error receipts                       |
 

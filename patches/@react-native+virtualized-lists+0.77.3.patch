@@ -1,0 +1,21 @@
+diff --git a/node_modules/@react-native/virtualized-lists/Lists/ListMetricsAggregator.js b/node_modules/@react-native/virtualized-lists/Lists/ListMetricsAggregator.js
+index 9516269..962b278 100644
+--- a/node_modules/@react-native/virtualized-lists/Lists/ListMetricsAggregator.js
++++ b/node_modules/@react-native/virtualized-lists/Lists/ListMetricsAggregator.js
+@@ -269,10 +269,12 @@ export default class ListMetricsAggregator {
+ 
+     if (horizontal && rtl) {
+       const contentLength = referenceContentLength ?? this._contentLength;
+-      invariant(
+-        contentLength != null,
+-        'ListMetricsAggregator must be notified of list content layout before resolving offsets',
+-      );
++      if (contentLength == null) {
++        // Sylk: on Android (old arch) a cell's onLayout can reach JS before
++        // the ScrollView's onContentSizeChange. Fall back to the cartesian
++        // offset instead of throwing (facebook/react-native#47153).
++        return this._selectOffset(layout);
++      }
+       return (
+         contentLength -
+         (this._selectOffset(layout) + this._selectLength(layout))

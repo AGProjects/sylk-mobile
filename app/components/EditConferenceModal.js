@@ -123,7 +123,7 @@ const filterInvitableContacts = (allContacts, accountId, localDomain) => {
     if (!c || !c.uri) return false;
     const uri = String(c.uri).toLowerCase();
     if (uri === accId) return false;
-    if (uri.indexOf('@videoconference.') > -1) return false;
+    if (utils.isConferenceUri(uri)) return false;
     if (utils.isAnonymous(uri)) return false;
     // Phone-number rows can be tagged 'tel' (set in newContact / the
     // address book import path) OR detectable purely from the URI

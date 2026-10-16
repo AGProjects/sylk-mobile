@@ -5,6 +5,7 @@ import PropTypes from 'prop-types';
 import autoBind from 'auto-bind';
 import { View, Platform, Modal, TouchableWithoutFeedback, KeyboardAvoidingView } from 'react-native';
 import UserIcon from './UserIcon';
+import utils from '../utils';
 import { Text, Button, Surface, Switch, Checkbox } from 'react-native-paper';
 import PlatformToggle from './PlatformToggle';
 
@@ -330,7 +331,7 @@ class DeleteHistoryModal extends Component {
 	}
 
     render() {
-        const canDeleteRemote = this.props.uri && !this.props.uri.includes('@videoconference');
+        const canDeleteRemote = this.props.uri && !utils.isConferenceUri(this.props.uri);
         let deleteLabel = 'Delete';
         
 		const remote_label = this.props.selectedContact ? (this.props.selectedContact.displayName || this.props.selectedContact.uri): this.props.uri;

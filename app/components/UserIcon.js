@@ -4,6 +4,8 @@ import utils from '../utils';
 import { Text, View, Platform } from 'react-native'
 import { Avatar} from 'react-native-paper';
 import { StyleSheet } from 'react-native';
+import { avatarPhotoFor, useAvatarVersion } from '../avatars';
+import { Gravatar } from '../gravatar';
 
 const styles = StyleSheet.create({
   avatarLabelAndroid: {
@@ -28,10 +30,17 @@ const UserIcon = (props) => {
     // initials / icon path below as a fallback.
     const [imageError, setImageError] = useState(false);
 
+    // Contact avatar from SylkServer account storage (or one the user just
+    // set and is still uploading). It wins over identity.photo, which is the
+    // phonebook / gravatar picture -- docs/CONTACT-AVATARS.md, "Display".
+    // Re-rendered whenever the avatar cache changes.
+    useAvatarVersion();
+    const storedPhoto = props.identity && !props.noStoredAvatar ? avatarPhotoFor(props.identity) : null;
+
     // Reset the error flag whenever the photo URI changes — a fresh
     // photo deserves a fresh try, otherwise a previously-failed
     // contact could never recover after their photo gets updated.
-    const photoUri = props.identity ? props.identity.photo : null;
+    const photoUri = storedPhoto || (props.identity ? props.identity.photo : null);
     useEffect(() => {
         setImageError(false);
     }, [photoUri]);
@@ -41,7 +50,7 @@ const UserIcon = (props) => {
     }
 
     const name = props.identity.name || props.identity.uri;
-    const photo = props.identity.photo;
+    const photo = photoUri;
 
     // Two-letter avatar label:
     //   • Multi-word name → first letter of the first two words
@@ -117,7 +126,7 @@ const UserIcon = (props) => {
                 );
     }
 
-    if (props.identity.uri && props.identity.uri.search('videoconference') !== -1) {
+    if (props.identity.uri && utils.isConferenceUri(props.identity.uri)) {
          return (
             <Avatar.Icon style={{backgroundColor: color}} size={avatarSize} icon="account-group" />
                 );
@@ -144,7 +153,38 @@ const UserIcon = (props) => {
 UserIcon.propTypes = {
     identity: PropTypes.object.isRequired,
     large: PropTypes.bool,
-    size: PropTypes.number
+    size: PropTypes.number,
+    // Draw the identity's own photo / initials only, never the stored
+    // avatar (the editor's preview of a removed picture).
+    noStoredAvatar: PropTypes.bool,
+};
+
+// UserIcon, or the identity's gravatar when it has an email and no picture
+// of its own. A stored avatar counts as a picture, so this has to follow the
+// avatar cache too.
+export const AvatarOrGravatar = ({ identity, size = 50, gravatarStyle, gravatarSize, ...rest }) => {
+    useAvatarVersion();
+    if (!identity) return null;
+    if (identity.photo || avatarPhotoFor(identity) || !identity.email) {
+        return <UserIcon size={size} identity={identity} {...rest} />;
+    }
+    return (
+        <Gravatar
+            options={{
+                email: identity.email,
+                parameters: { size: gravatarSize !== undefined ? gravatarSize : size, d: 'mm' },
+                secure: true,
+            }}
+            style={gravatarStyle || { width: size, height: size, borderRadius: size / 2 }}
+        />
+    );
+};
+
+AvatarOrGravatar.propTypes = {
+    identity: PropTypes.object,
+    size: PropTypes.number,
+    gravatarStyle: PropTypes.any,
+    gravatarSize: PropTypes.any,
 };
 
 export default UserIcon;

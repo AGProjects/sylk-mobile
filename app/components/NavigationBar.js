@@ -45,7 +45,7 @@ import NavigationBarModals from './NavigationBarModals';
 import {openSettings, check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 import SylkAppbarContent from './SylkAppbarContent';
 import DarkModeManager from '../DarkModeManager';
-import UserIcon from './UserIcon';
+import UserIcon, { AvatarOrGravatar } from './UserIcon';
 import {Gravatar, GravatarApi} from '../gravatar';
 import * as Progress from 'react-native-progress';
 // `storage` (AsyncStorage wrapper) was previously used here to
@@ -1243,7 +1243,7 @@ class NavigationBar extends Component {
                 this.toggleAddContactModal();
                 break;
             case 'editContact':
-                if (this.props.selectedContact && this.props.selectedContact.uri.indexOf('@videoconference') > -1) {
+                if (this.props.selectedContact && utils.isConferenceUri(this.props.selectedContact.uri, this.props.defaultConferenceDomain)) {
                     this.setState({showEditConferenceModal: true});
                 } else {
                     this.setState({showEditContactModal: true});
@@ -1619,7 +1619,7 @@ class NavigationBar extends Component {
         }
         const peerUri = selected.uri;
         const myUri = this.props.accountId || '';
-        const conferenceDomain = this.props.defaultConferenceDomain || 'videoconference.sip2sip.info';
+        const conferenceDomain = this.props.defaultConferenceDomain || 'conference.sip2sip.info';
         const myUser = (myUri && myUri.split('@')[0]) || 'me';
         const peerUser = (peerUri && peerUri.split('@')[0]) || 'peer';
         const parts = [myUser, peerUser].map(s => s.toLowerCase()).sort();
@@ -2430,12 +2430,8 @@ class NavigationBar extends Component {
 
 				{this.props.selectedContact ?
 					<View style={styles.avatarContent}>
-						{this.props.selectedContact.photo ||
-						!this.props.selectedContact.email ? (
-							<UserIcon size={as} identity={this.props.selectedContact}/>
-						) : (
-							<Gravatar options={{email: this.props.selectedContact.email, parameters: { "size": as, "d": "mm" }, secure: true}} style={[styles.gravatar, {width: as, height: as}]} />
-						)}
+						<AvatarOrGravatar size={as} identity={this.props.selectedContact}
+							gravatarStyle={[styles.gravatar, {width: as, height: as}]} />
 					</View>
 				: null}
 

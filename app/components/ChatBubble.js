@@ -506,7 +506,10 @@ const ChatBubble = memo(
     // Choose bubble variant (image / video / audio / text)
     let content = null;
 
-    if (currentMessage.image) {
+    // Pending (not yet downloaded/decrypted) images use the image bubble
+    // frame too, so the reserved placeholder has exactly the width the
+    // final image bubble will have -- no reflow when the file lands.
+    if (currentMessage.image || utils.isPendingInlineImage(currentMessage)) {
       // Preview state: the user just attached an image and is about
       // to send it. Strip every bit of margin/padding/border GiftedChat
       // adds around the bubble so the image fills the screen edge to

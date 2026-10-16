@@ -23,21 +23,50 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </style></head><body>
 <h1 id="sylk-mobile-addressbook---design">Sylk Mobile Addressbook - Design</h1>
 <h2 id="purpose">Purpose</h2>
-<p><strong>Sync each user's contact list across all of their devices.</strong> A contact that is created, edited, renamed, re-grouped, or deleted on one device appears the same way on every other device signed into the same account. The shared store is the SylkServer <a href="https://openxcap.org">XCAP</a> addressbook; every device keeps a local SQLite copy for offline use and fast rendering, and reconciles it against the server.</p>
-<p>Guiding principle: <strong>the server is authoritative.</strong> Where a contact exists on both sides, server data wins. Purely local data — call history, message previews, and per-device preferences — is preserved and never overwritten by sync.</p>
+<p><strong>Sync each user’s contact list across all of their devices.</strong> A contact that is
+created, edited, renamed, re-grouped, or deleted on one device appears the same way on
+every other device signed into the same account. The shared store is the SylkServer
+<a href="https://openxcap.org">XCAP</a> addressbook; every device keeps a local SQLite copy for
+offline use and fast rendering,
+and reconciles it against the server.</p>
+<p>Guiding principle: <strong>the server is authoritative.</strong> Where a contact exists on both sides,
+server data wins. Purely local data — call history, message previews, and per-device
+preferences — is preserved and never overwritten by sync.</p>
 <p>Operations can be done online or offline, and all operations are reconciled, eventually.</p>
-<p>Use this document when building another client that stores its addressbook in XCAP, or that has to interoperate with Sylk. By obeying the same rules, the addressbook stays consistent across different implementations — see <a href="#16-interoperability-with-other-clients">Chapter 16 Interoperability</a>.</p>
-<p>Companion: <a href="code-reference.html"><code>code-reference.html</code></a> maps this design onto the implementation — the <code>_ab*</code> functions in <code>app/app.js</code>, grouped by concern.</p>
-<p><strong>Disclaimer:</strong> always check the code for the actual reference and for undocumented changes. Documentation can always be out of date.</p>
+<p>Use this document when building another client that stores its addressbook in XCAP, or
+that has to interoperate with Sylk. By obeying the same rules, the addressbook stays
+consistent across different implementations — see
+<a href="#16-interoperability-with-other-clients">Chapter 16 Interoperability</a>.</p>
+<p>Companion: <a href="code-reference.html"><code>code-reference.html</code></a> maps this design onto the
+implementation — the <code>_ab*</code> functions in <code>app/app.js</code>, grouped by concern.</p>
+<p><strong>Disclaimer:</strong> always check the code for the actual reference and for undocumented
+changes. Documentation can always be out of date.</p>
 <hr />
 <h2 id="1-architecture">1. Architecture</h2>
-<p>Three layers cooperate:</p>
+<p>Three clients share the addressbook of an account:</p>
 <ul>
-<li><strong>App (sylk-mobile).</strong> The local SQLite <code>contacts</code> table is the source of truth for the UI. The app renders from SQLite and reconciles it against the server addressbook on every load/update.</li>
-<li><strong>react-native-sylkrtc.</strong> The client library exposes the addressbook as <code>connection.addressbook</code> — getters <code>contacts</code> / <code>groups</code> / <code>policies</code>, and events <code>dataLoaded</code>, <code>dataUpdated</code>, <code>dataDeleted</code>, <code>dataUpdateFailed</code>. It keeps an in-memory mirror of the server addressbook.</li>
-<li><strong>SylkServer webrtcgateway → openxcap.</strong> The gateway proxies addressbook reads and writes to the openxcap REST API, which stores the addressbook as an XCAP XML document. When the document changes, openxcap notifies the gateway (XCAP <code>xcap-diff</code> PUBLISH) and the gateway tells every online device of that account to converge.</li>
+<li><strong>sylk-mobile</strong> (React Native, react-native-sylkrtc), described throughout this document.</li>
+<li><strong>sylk-desktop</strong> (Electron, sylkrtc.js), which follows the same rules through the same shared
+JavaScript files. Its implementation is described in <a href="#27-sylk-desktop">Chapter 27</a>.</li>
+<li><strong>Blink desktop for macOS</strong> (Python, python3-sipsimple), which talks XCAP directly and
+implements the same rules in Python.</li>
 </ul>
-<p>Cross-device propagation therefore flows: <strong>device A writes → gateway → openxcap → xcap-diff → gateway → all online devices re-fetch and reconcile.</strong></p>
+<p>On the mobile, three layers cooperate:</p>
+<ul>
+<li><strong>App (sylk-mobile).</strong> The local SQLite <code>contacts</code> table is the source of truth for the
+UI. The app renders from SQLite and reconciles it against the server addressbook on
+every load/update.</li>
+<li><strong>react-native-sylkrtc.</strong> The client library exposes the addressbook as
+<code>connection.addressbook</code> — getters <code>contacts</code> / <code>groups</code> / <code>policies</code>, and events
+<code>dataLoaded</code>, <code>dataUpdated</code>, <code>dataDeleted</code>, <code>dataUpdateFailed</code>. It keeps an in-memory
+mirror of the server addressbook.</li>
+<li><strong>SylkServer webrtcgateway → openxcap.</strong> The gateway proxies addressbook reads and
+writes to the openxcap REST API, which stores the addressbook as an XCAP XML document.
+When the document changes, openxcap notifies the gateway (XCAP <code>xcap-diff</code> PUBLISH) and
+the gateway tells every online device of that account to converge.</li>
+</ul>
+<p>Cross-device propagation therefore flows: <strong>device A writes → gateway → openxcap →
+xcap-diff → gateway → all online devices re-fetch and reconcile.</strong></p>
 <hr />
 <h2 id="2-data-model">2. Data model</h2>
 <h3 id="server-contact">Server contact</h3>
@@ -45,13 +74,20 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;string&quot;</span><span class="fu">,</span></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;display name&quot;</span><span class="fu">,</span></span>
 <span id="cb1-4"><a href="#cb1-4" aria-hidden="true"></a>  <span class="dt">&quot;uris&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;uri&quot;</span><span class="fu">:</span> <span class="st">&quot;alice@example.com&quot;</span><span class="fu">,</span> <span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;&quot;</span><span class="fu">,</span> <span class="dt">&quot;attributes&quot;</span><span class="fu">:</span> <span class="fu">{},</span> <span class="dt">&quot;default&quot;</span><span class="fu">:</span> <span class="kw">false</span> <span class="fu">}</span> <span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true"></a>  <span class="dt">&quot;default_uri&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;uri&quot;</span><span class="fu">:</span> <span class="st">&quot;alice@example.com&quot;</span> <span class="fu">},</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true"></a>  <span class="dt">&quot;defaultUri&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;uri&quot;</span><span class="fu">:</span> <span class="st">&quot;alice@example.com&quot;</span> <span class="fu">},</span></span>
 <span id="cb1-6"><a href="#cb1-6" aria-hidden="true"></a>  <span class="dt">&quot;dialog&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;policy&quot;</span><span class="fu">:</span> <span class="st">&quot;default&quot;</span><span class="fu">,</span> <span class="dt">&quot;subscribe&quot;</span><span class="fu">:</span> <span class="kw">false</span> <span class="fu">},</span></span>
 <span id="cb1-7"><a href="#cb1-7" aria-hidden="true"></a>  <span class="dt">&quot;presence&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;policy&quot;</span><span class="fu">:</span> <span class="st">&quot;default&quot;</span><span class="fu">,</span> <span class="dt">&quot;subscribe&quot;</span><span class="fu">:</span> <span class="kw">false</span> <span class="fu">},</span></span>
 <span id="cb1-8"><a href="#cb1-8" aria-hidden="true"></a>  <span class="dt">&quot;attributes&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="fu">}</span></span>
 <span id="cb1-9"><a href="#cb1-9" aria-hidden="true"></a><span class="fu">}</span></span></code></pre></div>
+<p>The default URI travels as <strong><code>defaultUri</code></strong>: that is the field the gateway sends (webrtcgateway
+<code>models/xcap.py</code>, <code>Contact</code>), filled with <code>uris[0]</code> when the document names no default. The
+gateway also accepts <code>default_uri</code> on writes and renames it. A client reading a contact must
+read <code>defaultUri</code> first; reading only <code>default_uri</code> never sees the server’s default
+(<code>addressbookRules.chosenDefaultUri</code> reads both, <code>defaultUri</code> first).</p>
 <h3 id="server-group">Server group</h3>
-<p>A group is the cross-device form of the app's per-contact <strong>tags</strong> (see Chapter 7). Its membership is carried as full contact objects (same shape as above), not id references, and is replaced wholesale on each <code>addGroup</code> / <code>updateGroup</code>.</p>
+<p>A group is the cross-device form of the app’s per-contact <strong>tags</strong> (see Chapter 7). Its
+membership is carried as full contact objects (same shape as above), not id
+references, and is replaced wholesale on each <code>addGroup</code> / <code>updateGroup</code>.</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true"></a><span class="fu">{</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;string&quot;</span><span class="fu">,</span></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;Favorites&quot;</span><span class="fu">,</span></span>
@@ -60,6 +96,10 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 <span id="cb2-6"><a href="#cb2-6" aria-hidden="true"></a><span class="fu">}</span></span></code></pre></div>
 <h3 id="local-sqlite-contacts-key-account--contact_id">Local SQLite <code>contacts</code> (key <code>account</code> + <code>contact_id</code>)</h3>
 <table>
+<colgroup>
+<col style="width: 57%" />
+<col style="width: 42%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>column</th>
@@ -107,36 +147,218 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </table>
 <h3 id="in-memory-contact">In-memory contact</h3>
 <div class="sourceCode" id="cb3"><pre class="sourceCode javascript"><code class="sourceCode javascript"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true"></a>{ id<span class="op">,</span> uri<span class="op">,</span> <span class="dt">uris</span><span class="op">:</span>[]<span class="op">,</span> name<span class="op">,</span> organization<span class="op">,</span> email<span class="op">,</span> <span class="dt">tags</span><span class="op">:</span>[]<span class="op">,</span> <span class="dt">properties</span><span class="op">:</span>{}<span class="op">,</span> <span class="dt">localProperties</span><span class="op">:</span>{}<span class="op">,</span> <span class="op">...</span> }</span></code></pre></div>
-<p><code>uris</code> is an array of plain URI strings. The contact index resolves a contact by its <code>uri</code>, <code>id</code>, any entry in <code>uris</code>, or a phone-number variant of any of those.</p>
+<p><code>uris</code> is an array of plain URI strings. The contact index resolves a contact by its
+<code>uri</code>, <code>id</code>, any entry in <code>uris</code>, or a phone-number variant of any of those.</p>
 <hr />
 <h2 id="3-uri-normalization-rules">3. URI normalization rules</h2>
-<p>A small set of fixed conventions keep stored URIs consistent across devices and the server, and keep junk out of the addressbook.</p>
+<p>A small set of fixed conventions keep stored URIs consistent across devices and the
+server, and keep junk out of the addressbook.</p>
 <ul>
-<li><strong>Phone numbers are stored without a domain.</strong> A URI whose user part is a phone number (<code>+34918034800@sylk.link</code>) is stored as the bare number <code>+34918034800</code>. The domain is appended only on the wire at call/chat time. Matching between the bare number and a domain-qualified form is handled by phone-number variants.</li>
-<li><strong>Conference domains are swapped at the boundary.</strong> The local/Sylk world uses the <code>videoconference.X</code> bridge; the server addressbook uses the linked <code>conference.X</code> bridge. On push the local domain is mapped to the server form (<code>videoconference.X → conference.X</code>); on import/display it is mapped back (<code>conference.X → videoconference.X</code>). Only the domain is swapped, the username is untouched. A conference room is <strong>discovered from a call-history CDR</strong>, saved locally as <code>@videoconference.X</code>, and <strong>created on XCAP by the client</strong> as <code>@conference.X</code>. See Chapter 17 for the full conference model.</li>
-<li><strong>Junk is purged from the server.</strong> Contacts on an IP-literal domain (<code>user@1.2.3.4</code>), conference rooms whose username starts with <code>0</code>, and Bonjour/link-local <code>@local</code> contacts are not imported. IP/anomaly contacts are deleted from the server; <code>@local</code> contacts (other LAN clients) are left on the server but skipped locally.</li>
+<li><strong>Phone numbers are stored without a domain.</strong> A URI whose user part is a phone number
+(<code>+34918034800@sylk.link</code>) is stored as the bare number <code>+34918034800</code>. The domain is
+appended only on the wire at call/chat time. Matching between the bare number and a
+domain-qualified form is handled by phone-number variants.</li>
+<li><strong>Conference domains are swapped at the boundary.</strong> The local/Sylk world uses the
+<code>videoconference.X</code> bridge; the server addressbook uses the linked <code>conference.X</code>
+bridge. On push the local domain is mapped to the server form
+(<code>videoconference.X → conference.X</code>); on import/display it is mapped back
+(<code>conference.X → videoconference.X</code>). Only the domain is swapped, the username is untouched.
+A conference room is <strong>discovered from a call-history CDR</strong>, saved locally as
+<code>@videoconference.X</code>, and <strong>created on XCAP by the client</strong> as <code>@conference.X</code>. See Chapter 17 for
+the full conference model.</li>
+<li><strong>Junk is purged from the server.</strong> Contacts on an IP-literal domain (<code>user@1.2.3.4</code>),
+conference rooms whose username starts with <code>0</code>, and Bonjour/link-local <code>@local</code>
+contacts are not imported. IP/anomaly contacts are deleted from the server; <code>@local</code>
+contacts (other LAN clients) are left on the server but skipped locally.</li>
 </ul>
 <hr />
 <h2 id="4-display-name-resolution">4. Display name resolution</h2>
-<p>Only a <strong>real</strong> display name is ever stored. A name is treated as a <em>URI-echo</em> (i.e. not a real name) when it is empty, equals the full URI, equals the URI with <code>@</code> removed, or equals the URI's username. The stored name is chosen as:</p>
+<p>Only a <strong>real</strong> display name is ever stored. A name is treated as a <em>URI-echo</em> (i.e. not
+a real name) when it is empty, equals the full URI, equals the URI with <code>@</code> removed, or
+equals the URI’s username. The stored name is chosen as:</p>
 <pre><code>name = server name   if it is a real name (authoritative)
      = local name     else if the local name is a real name
-     = empty           else (the UI shows the URI/username)
-</code></pre>
-<p>For a phone-number contact with no real name, the number is looked up in the device's OS address book and that name is used if found. The UI prettifies a username (<code>john.doe → "John Doe"</code>) only when no real name is stored.</p>
+     = empty           else (the UI shows the URI/username)</code></pre>
+<p>For a phone-number contact with no real name, the number is looked up in the device’s OS
+address book and that name is used if found. The UI prettifies a username
+(<code>john.doe → "John Doe"</code>) only when no real name is stored.</p>
 <hr />
 <h2 id="5-server--local-matching">5. Server ↔︎ local matching</h2>
-<p>For each server contact <code>S</code>, the app computes <code>serverUris = unique(default_uri + uris)</code> and finds local matches by <code>remote_id === S.id</code> (strong link) or by any shared URI:</p>
+<p>For each server contact <code>S</code>, the app computes <code>serverUris = unique(default_uri + uris)</code>
+and finds local matches by <code>remote_id === S.id</code> (strong link) or by any shared URI:</p>
 <ul>
-<li><strong>No match → import.</strong> Create a local row with <code>remote_id = S.id</code>, the chosen default URI, the full URI list, and the resolved name.</li>
-<li><strong>One match → update (server wins).</strong> Set name / URIs / <code>remote_id</code>; leave local-only fields untouched.</li>
-<li><strong>Server duplicates</strong> that share an identical URI set are folded onto one canonical server contact and the local row is relinked onto it (<code>remote_id</code> adopts the survivor's id). See Chapter 16 for how the survivor is chosen and why the redundant server copies are <strong>relinked, never deleted</strong>.</li>
+<li><strong>No match → import.</strong> Create a local row with <code>remote_id = S.id</code>, the chosen default
+URI, the full URI list, and the resolved name.</li>
+<li><strong>One match → update (server wins).</strong> Set name / URIs / <code>remote_id</code>; leave local-only
+fields untouched.</li>
+<li><strong>Server duplicates</strong> that share an identical URI set are folded onto one canonical
+server contact and the local row is relinked onto it (<code>remote_id</code> adopts the survivor’s
+id). See Chapter 16 for how the survivor is chosen and why the redundant server copies are
+<strong>relinked, never deleted</strong>.</li>
 </ul>
-<p>The chosen default URI prefers a non-phone address under the account's domain, then any non-phone SIP address, then a phone number, then the first URI.</p>
+<p>The chosen default URI prefers a non-phone address under the account’s domain, then any
+non-phone SIP address, then a phone number, then the first URI.</p>
 <hr />
-<h2 id="6-contact-attributes">6. Contact attributes</h2>
-<p>The server contact's free-form <code>attributes</code> dict carries the cross-device fields that have no first-class server column:</p>
+<h2 id="5b-group-attributes">5b. Group attributes</h2>
+<p>A group carries an <code>attributes</code> bag exactly as a contact does, and it holds one
+field:</p>
 <table>
+<colgroup>
+<col style="width: 55%" />
+<col style="width: 45%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>attribute</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>kind</code></td>
+<td>what the group <strong>is</strong>, independent of what it is called: <code>calls</code>, <code>tel</code>, <code>blocked</code>, <code>conference</code>, <code>missed</code>, <code>favorites</code>, or absent for an ordinary user group</td>
+</tr>
+</tbody>
+</table>
+<p><code>blocked</code> matters more than the other two: it is what a client reads to decide
+whether to reject an incoming call, so a group whose identity depends on its
+name would stop blocking the moment somebody renamed it.</p>
+<p>Note what <code>blocked</code> does <strong>not</strong> mean. A presence policy of <code>block</code> says “do
+not tell them whether I am available” and must never decide whether a call
+rings — a user can perfectly well take calls from someone they do not share
+presence with. The two are separate lists that happen to share a word.</p>
+<p><strong>Why it exists.</strong> A group’s <code>id</code> belongs to whichever client created it — ours
+come from <code>_abGenerateServerId</code>, Blink’s from its own allocator — and its <code>name</code>
+is a label the user may rename at any time. Neither is an identity two clients
+can agree on. Blink looked for the Calls group by name and would have created a
+second one the first time it was renamed; that second group then replicates back
+here and shows up alongside the first.</p>
+<p><code>kind</code> is the identity that survives both. Resolution order, in every client:
+<strong>kind → name → create.</strong> The name fallback is permanent: every group that
+exists today predates the attribute and carries no <code>kind</code>.</p>
+<p><strong>Rules, and they are the same on both sides:</strong></p>
+<ul>
+<li>Never create a group in order to stamp one. No group, no write.</li>
+<li>Never overwrite a <code>kind</code> another client wrote. A value you did not write is a
+fact about someone else’s intent, not a free slot.</li>
+<li>Preserve the rest of the bag (chapter 16.4 already requires this).</li>
+<li>Stamp at most once per account per session: every write re-triggers
+<code>dataUpdated</code> → reconcile, and that loop is easy to start.</li>
+</ul>
+<p>Values are lowercase machine words, never display text. Blink writes the same
+ones through <code>BlinkGroupExtension.kind</code>, a sipsimple <code>SharedSetting</code> that lands
+in this same XCAP attribute bag.</p>
+<h3 id="5b1-reserved-group-ids">5b.1 Reserved group ids</h3>
+<p>The rule, and it applies to every client:</p>
+<blockquote>
+<p>A group the software creates by itself — from calls, from missed calls, from
+a number being a number — is not the user’s group and must not depend on the
+user’s spelling of its name. It gets a reserved id.</p>
+</blockquote>
+<p><code>_messages</code> has worked exactly that way for years. It works because only one
+client ever creates it; once two clients create the same group, an id nobody
+has to agree on in advance is the only thing that makes them the same group.</p>
+<table>
+<thead>
+<tr class="header">
+<th>kind</th>
+<th>reserved id</th>
+<th>local tag</th>
+<th>mapped name</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>calls</code></td>
+<td><code>_calls</code></td>
+<td><code>calls</code></td>
+<td>Calls</td>
+</tr>
+<tr class="even">
+<td><code>tel</code></td>
+<td><code>_tel</code></td>
+<td><code>tel</code></td>
+<td>Tel</td>
+</tr>
+<tr class="odd">
+<td><code>blocked</code></td>
+<td><code>_blocked</code></td>
+<td><code>blocked</code></td>
+<td>Blocked</td>
+</tr>
+<tr class="even">
+<td><code>conference</code></td>
+<td><code>_conference</code></td>
+<td><code>conference</code></td>
+<td>Conference</td>
+</tr>
+<tr class="odd">
+<td><code>missed</code></td>
+<td><code>_missed</code></td>
+<td><code>missed</code></td>
+<td>Missed</td>
+</tr>
+<tr class="even">
+<td><code>favorites</code></td>
+<td><code>_favorites</code> (legacy <code>favorites</code>)</td>
+<td><code>favorite</code> — <strong>singular</strong></td>
+<td>Favorites</td>
+</tr>
+<tr class="odd">
+<td>—</td>
+<td><code>_messages</code></td>
+<td><code>messages</code> (device-local)</td>
+<td>Messages</td>
+</tr>
+<tr class="even">
+<td>—</td>
+<td><code>_deleted</code></td>
+<td>—</td>
+<td>Deleted</td>
+</tr>
+</tbody>
+</table>
+<p>The singular <code>favorite</code> is the tag this client has always stored, and
+<code>_abGroupNameToTag('Favorites')</code> maps onto it. Writing <code>favorites</code> there would
+tag every member with a string nothing else matches.</p>
+<p><code>_abReservedIdForKind</code> supplies the id to <code>_abCreateGroup</code>, which pins it
+instead of minting one from <code>_abGenerateServerId</code>. This client deliberately did
+<em>not</em> pin ids before, and the reason has gone: it minted a server-shaped id for
+every group it created, so a pinned id would simply have lost the race. Blink
+pins the same ids now, so whichever client gets there first produces the same
+one and the second finds it.</p>
+<p><strong><code>kind</code> does not go away.</strong> An id cannot be changed: every group already in
+the wild carries the arbitrary id of whichever client created it, and the only
+way to give it a reserved one is to delete and re-create it, which drops the
+membership on every device that has not synced. The two mechanisms cover
+different populations —</p>
+<ul>
+<li><code>kind</code> identifies the groups that already exist;</li>
+<li>the reserved id identifies the groups created from now on.</li>
+</ul>
+<p>Resolution order, in both clients: <strong>kind → reserved id → name</strong>. The name
+fallback is permanent, for groups that predate both.</p>
+<p><code>_abReservedGroupKeys</code> maps ids onto reconcile keys and resolves <em>both</em>
+spellings of Favorites (<code>favorites</code> and <code>_favorites</code>) onto one key, so the
+migration can move between them without either client losing sight of the group
+in between. <code>_abMigrateReservedIds(ab)</code> performs the delete-and-re-create,
+bounded to three attempts and reading the <strong>live</strong> <code>ab.groups</code> each pass — a
+snapshot taken before stamping silently skips the groups stamped during the
+same pass.</p>
+<h3 id="5b2-a-fold-is-a-merge-not-a-removal">5b.2 A fold is a merge, not a removal</h3>
+<p>When two groups collapse onto one reconcile key, the loser’s disappearance is
+<strong>not</strong> a membership removal. <code>_abApplyServerDelete</code> ignores a delete when a
+surviving group shares the deleted group’s key. Without that guard the fold
+stripped the tag from 17 contacts, which the next reconcile re-adopted — a
+churn loop with no end state.</p>
+<h2 id="6-contact-attributes">6. Contact attributes</h2>
+<p>The server contact’s free-form <code>attributes</code> dict carries the cross-device fields that
+have no first-class server column:</p>
+<table>
+<colgroup>
+<col style="width: 55%" />
+<col style="width: 45%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>attribute</th>
@@ -166,123 +388,324 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 </tbody>
 </table>
-<p>Per-device data — codecs, encryption mode, zRTP state, auto-record, auto-answer, and the OS-address-book link — is <strong>never</strong> synced.</p>
-<p><strong>Adoption is additive.</strong> XCAP omits unset attributes, so an absent attribute is indistinguishable from "explicitly false". Adoption therefore only <em>adds/sets</em> what the server explicitly carries and never <em>removes</em> a local flag because the server's copy is empty. Consequence: turning a flag <strong>on</strong> propagates across devices; turning it <strong>off</strong> is a per-device change. Flag values are read tolerantly as either booleans or the strings <code>"true"</code>/<code>"false"</code> (XCAP stores attribute values as text).</p>
-<p><strong>Edit protection.</strong> When the user edits an authoritative field (name / organization / email), the new value is recorded per contact-field. A re-fetch that is still in flight can briefly return the pre-edit value; until the server confirms the new value (or a short timeout elapses), adoption keeps the local edit rather than reverting it.</p>
+<p>Per-device data — codecs, encryption mode, zRTP state, auto-record, auto-answer, and the
+OS-address-book link — is <strong>never</strong> synced.</p>
+<p><strong>Adoption is additive.</strong> XCAP omits unset attributes, so an absent attribute is
+indistinguishable from “explicitly false”. Adoption therefore only <em>adds/sets</em> what the
+server explicitly carries and never <em>removes</em> a local flag because the server’s copy is
+empty. Consequence: turning a flag <strong>on</strong> propagates across devices; turning it <strong>off</strong>
+is a per-device change. Flag values are read tolerantly as either booleans or the strings
+<code>"true"</code>/<code>"false"</code> (XCAP stores attribute values as text).</p>
+<p><strong>Edit protection.</strong> When the user edits an authoritative field (name / organization /
+email), the new value is recorded per contact-field. A re-fetch that is still in flight
+can briefly return the pre-edit value; until the server confirms the new value (or a
+short timeout elapses), adoption keeps the local edit rather than reverting it.</p>
 <hr />
 <h2 id="7-groups--tags">7. Groups ↔︎ tags</h2>
-<p>Server groups are the cross-device form of the app's per-contact <strong>tags</strong>, which drive the category bar. A contact in several groups carries several tags; the group <strong>name</strong> is the tag, resolved to the server <strong>group id</strong> only when talking to the server.</p>
+<p>Server groups are the cross-device form of the app’s per-contact <strong>tags</strong>, which drive
+the category bar. A contact in several groups carries several tags; the group <strong>name</strong> is
+the tag, resolved to the server <strong>group id</strong> only when talking to the server.</p>
 <ul>
-<li><strong>Group tags</strong> (<code>favorite</code>, <code>blocked</code>, <code>tel</code>, and any custom tag) map to server groups. Reserved tags use canonical names (<code>favorite → Favorites</code>, <code>blocked → Blocked</code>, <code>tel → Tel</code>, <code>chat → Messages</code>); custom tags use the tag text. The server group name is the displayed label. Names are case-insensitive with a Capitalized canonical form.</li>
-<li><strong>Auto-derived categories</strong> (<code>messages</code>, <code>chat</code>, <code>calls</code>, <code>recent</code>, <code>missed</code>) are computed on each device from message and call history. They are <strong>not</strong> user groups and are excluded from group sync entirely.</li>
-<li><strong>Flag tags</strong> (<code>bypassdnd</code>, <code>muted</code>, <code>noread</code>) and the <strong><code>caregiver</code></strong> flag are per-contact flags, not groups, and are excluded from group treatment.</li>
+<li><strong>Group tags</strong> (<code>favorite</code>, <code>blocked</code>, <code>tel</code>, and any custom tag) map to server groups.
+Reserved tags use canonical names (<code>favorite → Favorites</code>, <code>blocked → Blocked</code>,
+<code>tel → Tel</code>, <code>chat → Messages</code>); custom tags use the tag text. The server group name is
+the displayed label. Names are case-insensitive with a Capitalized canonical form.</li>
+<li><strong>Auto-derived categories</strong> (<code>messages</code>, <code>chat</code>, <code>calls</code>, <code>recent</code>, <code>missed</code>) are
+computed on each device from message and call history. <code>messages</code>, <code>chat</code> and <code>recent</code>
+are <strong>not</strong> user groups and are excluded from group sync entirely — they carry no
+<code>kind</code>, no other client owns them, and the server copy is per-device.
+<code>calls</code>, <code>missed</code> and <code>favorites</code> are the exception and are <strong>bidirectional</strong>: when the
+server group carries a <code>kind</code> (chapter 5b) another client created it as part of the
+cross-client contract, so its membership is shared — this device contributes its own
+call parties and adopts the ones other clients filed. See chapter 23 for what happened
+when that was not true.</li>
+<li><strong>Flag tags</strong> (<code>bypassdnd</code>, <code>muted</code>, <code>noread</code>) and the <strong><code>caregiver</code></strong> and
+<strong><code>autoanswer</code></strong> flags are per-contact flags, not groups, and are excluded from
+group treatment — in both directions. <code>autoanswer</code> is per-device (see above) and
+is neither published as a group nor adopted from one; a server group named
+<code>Caregivers</code> is an ordinary group with no bearing on auto-answer.</li>
 <li><strong>Conference</strong> group collects all conference contacts (detected by bridge domain).</li>
 </ul>
-<p>A per-account local cache maps server group id ↔︎ name and is replaced from the server set on every load.</p>
+<p>A per-account local cache maps server group id ↔︎ name and is replaced from the server set
+on every load.</p>
 <h3 id="live-group-convergence">Live group convergence</h3>
 <ul>
-<li><strong>Adoption (server → local).</strong> For every server group, any local member missing the corresponding tag is tagged — continuously, on every sync, not only at first import.</li>
-<li><strong>Deletion while online.</strong> A group deletion is relayed to all online devices; the client library evicts the item from its cache and the app strips the group's tag from local members.</li>
-<li><strong>Deletion while offline.</strong> A device that was offline at delete time receives only a full snapshot, with no per-group delete signal. Each device therefore persists the set of server group names it has seen: a local-only group that <em>was</em> seen before and is now gone was deleted elsewhere → its tag is stripped; a group <em>never</em> seen on the server is a new local group and is kept (and pushed). The first run seeds the baseline from the server set only, so a group created locally while offline is never mistaken for a deletion.</li>
+<li><strong>Adoption (server → local).</strong> For every server group, any local member missing the
+corresponding tag is tagged — continuously, on every sync, not only at first import.</li>
+<li><strong>Deletion while online.</strong> A group deletion is relayed to all online devices; the client
+library evicts the item from its cache and the app strips the group’s tag from local
+members.</li>
+<li><strong>Deletion while offline.</strong> A device that was offline at delete time receives only a full
+snapshot, with no per-group delete signal. Each device therefore persists the set of
+server group names it has seen: a local-only group that <em>was</em> seen before and is now
+gone was deleted elsewhere → its tag is stripped; a group <em>never</em> seen on the server is a
+new local group and is kept (and pushed). The first run seeds the baseline from the
+server set only, so a group created locally while offline is never mistaken for a
+deletion.</li>
 </ul>
 <hr />
 <h2 id="8-cross-device-name--attribute-sync">8. Cross-device name &amp; attribute sync</h2>
 <p>Display names and attributes propagate through the server so all devices converge:</p>
 <ul>
-<li><strong>Push up.</strong> When the local value is real but the server still has only a URI-echo / empty value, push the local value up. A real server value is never replaced by a username/echo.</li>
-<li><strong>Adopt down.</strong> When the server carries a value the local row lacks, adopt it. Adoption is idempotent and non-replicating, so a change another device pushed shows up here without a full re-sync.</li>
+<li><strong>Push up.</strong> When the local value is real but the server still has only a URI-echo /
+empty value, push the local value up. A real server value is never replaced by a
+username/echo.</li>
+<li><strong>Adopt down.</strong> When the server carries a value the local row lacks, adopt it. Adoption
+is idempotent and non-replicating, so a change another device pushed shows up here
+without a full re-sync.</li>
 </ul>
 <hr />
 <h2 id="9-first-sync-reconciliation--ongoing-replication">9. First-sync reconciliation &amp; ongoing replication</h2>
-<p>The addressbook layer stays dormant until the app is fully settled for the current account (account id set, connection ready, local contacts loaded for this account, settings loaded, and server data delivered for this account). This prevents one account's data from leaking into another while switching accounts.</p>
-<p>A one-time reconciliation runs <strong>once per account</strong> (guarded by a persistent per-account marker, with an in-memory re-entrancy guard). It imports/updates server contacts, pushes local-only contacts up, reconciles groups, and applies the normalization rules — running in a bulk mode that suppresses per-contact re-renders and then refreshes once. An interrupted run fast-forwards on the next attempt via a per-contact change signature.</p>
-<p>The "once per account" guard is also <strong>published to the server</strong> so it holds across <em>all</em> devices and clients, not just locally. On a clean completion the migration version is written both to the local <code>accounts.ab_migration</code> column and, as the <code>MigratedVersion</code> attribute, onto the user's own (self) XCAP contact. A client that has not migrated yet checks that attribute first: if the server already carries a marker at or above the version it would run, the migration is treated as already done — the client adopts the marker into its local column and <strong>skips</strong> the destructive reconciliation, rather than re-importing contacts another client deleted on the server. A device that migrated under an older build re-publishes the marker on its next load. (Bumping the migration version forces a coordinated re-run: the server marker is then below the new required version everywhere.)</p>
-<p>After that, ongoing user edits replicate live (contact then group membership) on save; deletes replicate to the server. A push adopts an existing server contact with the same URI rather than creating a duplicate.</p>
-<p>On each authoritative load a JSON snapshot of the full server addressbook is written under the account's private folder for recovery; deleting the account purges that folder.</p>
+<p>The addressbook layer stays dormant until the app is fully settled for the current
+account (account id set, connection ready, local contacts loaded for this account,
+settings loaded, and server data delivered for this account). This prevents one account’s
+data from leaking into another while switching accounts.</p>
+<p>A one-time reconciliation runs <strong>once per account</strong> (guarded by a persistent per-account
+marker, with an in-memory re-entrancy guard). It imports/updates server contacts, pushes
+local-only contacts up, reconciles groups, and applies the normalization rules — running
+in a bulk mode that suppresses per-contact re-renders and then refreshes once. An
+interrupted run fast-forwards on the next attempt via a per-contact change signature.</p>
+<p>The “once per account” guard is also <strong>published to the server</strong> so it holds across <em>all</em>
+devices and clients, not just locally. On a clean completion the migration version is
+written both to the local <code>accounts.ab_migration</code> column and, as the <code>MigratedVersion</code>
+attribute, onto the user’s own (self) XCAP contact. A client that has not migrated yet
+checks that attribute first: if the server already carries a marker at or above the version
+it would run, the migration is treated as already done — the client adopts the marker into
+its local column and <strong>skips</strong> the destructive reconciliation, rather than re-importing
+contacts another client deleted on the server. A device that migrated under an older build
+re-publishes the marker on its next load. (Bumping the migration version forces a
+coordinated re-run: the server marker is then below the new required version everywhere.)</p>
+<p>After that, ongoing user edits replicate live (contact then group membership) on save;
+deletes replicate to the server. A push adopts an existing server contact with the same
+URI rather than creating a duplicate.</p>
+<p>On each authoritative load a JSON snapshot of the full server addressbook is written under
+the account’s private folder for recovery; deleting the account purges that folder.</p>
 <hr />
 <h2 id="10-offline-resilience--retry">10. Offline resilience &amp; retry</h2>
 <p>Writes are durable across connectivity gaps:</p>
 <ul>
-<li>A contact whose write does not reach the server — because the connection wasn't ready, or the server-side write failed transiently — is queued per account.</li>
-<li>The queue is flushed on the next <strong>good</strong> sync (server confirmed reachable), re-pushing each queued contact.</li>
-<li>Failures are classified: transport errors and 5xx/408/429 are <strong>retryable</strong> and queued; 4xx is a <strong>permanent</strong> rejection and is dropped (no infinite retry). The retryable classification is produced by the server and carried to the client on the update-failed event.</li>
+<li>A contact whose write does not reach the server — because the connection wasn’t ready,
+or the server-side write failed transiently — is queued per account.</li>
+<li>The queue is flushed on the next <strong>good</strong> sync (server confirmed reachable), re-pushing
+each queued contact.</li>
+<li>Failures are classified: transport errors and 5xx/408/429 are <strong>retryable</strong> and queued;
+4xx is a <strong>permanent</strong> rejection and is dropped (no infinite retry). The retryable
+classification is produced by the server and carried to the client on the update-failed
+event.</li>
 </ul>
-<p>The real success/failure of a write arrives as an asynchronous event (the send callback only acknowledges transport), so the queue is driven by that event plus the connection-not-ready case.</p>
-<p><strong>Where the queue lives.</strong> The queue is persisted in <strong>AsyncStorage</strong>, one key per account: <strong><code>ab_ops_queue.&lt;account&gt;</code></strong> (the legacy key <code>ab_pending_push.&lt;account&gt;</code> is read once and migrated forward, so writes queued before the rename are not lost). The value is a JSON array of normalized contact URIs (a serialized <code>Set</code>), so it survives app reloads and restarts and carries the backlog across an offline period until the next good sync drains it. A related per-account key, <code>ab_seen_groups.&lt;account&gt;</code>, backs the group baseline of Chapter 7.</p>
-<p><strong>Logged at startup.</strong> On the <strong>first authoritative load per account</strong> (the <code>dataLoaded</code> entry point), the contents of the pending-push queue are logged once — either <code>[ab] [queue] pending-push queue empty (&lt;key&gt;)</code> or <code>[ab] [queue] N contact(s) queued for re-push (&lt;key&gt;): &lt;uris&gt;</code>. This surfaces writes still owed to the server right away, rather than only when the queue is flushed (<code>[ab] [put] flushing N queued contact push(es)</code>).</p>
+<p>The real success/failure of a write arrives as an asynchronous event (the send callback
+only acknowledges transport), so the queue is driven by that event plus the
+connection-not-ready case.</p>
+<p><strong>Where the queue lives.</strong> The queue is persisted in <strong>AsyncStorage</strong>, one key per
+account: <strong><code>ab_ops_queue.&lt;account&gt;</code></strong> (the legacy key <code>ab_pending_push.&lt;account&gt;</code> is read
+once and migrated forward, so writes queued before the rename are not lost). The value is a
+JSON array of normalized contact URIs (a serialized <code>Set</code>), so it survives app reloads and
+restarts and carries the backlog across an offline period until the next good sync drains
+it. A related per-account key, <code>ab_seen_groups.&lt;account&gt;</code>, backs the group baseline of Chapter 7.</p>
+<p><strong>Logged at startup.</strong> On the <strong>first authoritative load per account</strong> (the <code>dataLoaded</code>
+entry point), the contents of the pending-push queue are logged once — either
+<code>[ab] [queue] pending-push queue empty (&lt;key&gt;)</code> or <code>[ab] [queue] N contact(s) queued for re-push (&lt;key&gt;): &lt;uris&gt;</code>. This surfaces writes still owed to the server right away, rather
+than only when the queue is flushed (<code>[ab] [put] flushing N queued contact push(es)</code>).</p>
 <hr />
 <h2 id="11-surviving-an-unreachable-server">11. Surviving an unreachable server</h2>
-<p>A transient XCAP outage must never look like "everything was deleted":</p>
+<p>A transient XCAP outage must never look like “everything was deleted”:</p>
 <ul>
-<li><strong>App safety gate.</strong> If a server snapshot is completely empty (no contacts and no groups) while the device still has server-linked local contacts, it is treated as a failed fetch and <em>all</em> reconciliation is skipped. The UI renders from SQLite, so it is never blanked, and the next good snapshot syncs normally.</li>
-<li><strong>Server skips empty broadcasts.</strong> When a change-triggered re-fetch fails, the gateway sends nothing rather than broadcasting an empty addressbook to every device, so a blip on one account doesn't wipe state everywhere.</li>
+<li><strong>App safety gate.</strong> If a server snapshot is completely empty (no contacts and no
+groups) while the device still has server-linked local contacts, it is treated as a
+failed fetch and <em>all</em> reconciliation is skipped. The UI renders from SQLite, so it is
+never blanked, and the next good snapshot syncs normally.</li>
+<li><strong>Server skips empty broadcasts.</strong> When a change-triggered re-fetch fails, the gateway
+sends nothing rather than broadcasting an empty addressbook to every device, so a blip
+on one account doesn’t wipe state everywhere.</li>
 </ul>
 <hr />
 <h2 id="12-contact-trash-soft--hard-delete">12. Contact trash (soft / hard delete)</h2>
 <ul>
-<li>A dedicated <code>deleted</code> column is the soft-delete flag and stays local — a trashed contact remains on the server until a hard delete.</li>
-<li>Long-press enters multi-select; a floating action deletes the selection. In normal views the action <strong>soft-deletes</strong> (moves the contact to the <strong>Deleted</strong> category, no confirmation); inside the Deleted view it <strong>hard-deletes</strong> (server + local + emptied groups) with a confirmation. Restore moves a contact back out of Deleted.</li>
-<li>Soft-deleted contacts are hidden from every view except Deleted; the own-account contact is never trashable.</li>
+<li>A dedicated <code>deleted</code> column is the soft-delete flag and stays local — a trashed contact
+remains on the server until a hard delete.</li>
+<li>Long-press enters multi-select; a floating action deletes the selection. In normal views
+the action <strong>soft-deletes</strong> (moves the contact to the <strong>Deleted</strong> category, no
+confirmation); inside the Deleted view it <strong>hard-deletes</strong> (server + local + emptied
+groups) with a confirmation. Restore moves a contact back out of Deleted.</li>
+<li>Soft-deleted contacts are hidden from every view except Deleted; the own-account contact
+is never trashable.</li>
 </ul>
 <hr />
 <h2 id="13-editing-behavior">13. Editing behavior</h2>
 <ul>
-<li>The edit form is populated from the <strong>selected contact</strong> (name, organization, email, tags) and is repopulated only when the modal opens or a different contact is loaded — a background sync arriving mid-edit never overwrites what the user is typing.</li>
-<li>A phone-number contact is added to the <code>Tel</code> group once at creation; the user may remove that later.</li>
-<li>Editing a contact's metadata does not change its position in the list (see Chapter 14).</li>
+<li>The edit form is populated from the <strong>selected contact</strong> (name, organization, email,
+tags) and is repopulated only when the modal opens or a different contact is loaded — a
+background sync arriving mid-edit never overwrites what the user is typing.</li>
+<li>A phone-number contact is added to the <code>Tel</code> group once at creation; the user may remove
+that later.</li>
+<li>Editing a contact’s metadata does not change its position in the list (see Chapter 14).</li>
 </ul>
 <hr />
 <h2 id="14-list-order--communication-recency">14. List order = communication recency</h2>
-<p>The contact list orders by a timestamp that represents <em>who you last communicated with</em>, not when a row was last touched:</p>
+<p>The contact list orders by a timestamp that represents <em>who you last communicated with</em>,
+not when a row was last touched:</p>
 <ul>
-<li>A contact's timestamp comes from its latest real chat message. System rows (key-received notices, call-log entries) do not count.</li>
-<li>A contact with no message history is pinned to a fixed historic date so pure addressbook imports sort below people you've actually talked to, instead of jumping to the top.</li>
-<li>A brand-new contact gets "now"; editing an existing contact and background sync never bump recency.</li>
+<li>A contact’s timestamp comes from its latest real chat message. System rows (key-received
+notices, call-log entries) do not count.</li>
+<li>A contact with no message history is pinned to a fixed historic date so pure addressbook
+imports sort below people you’ve actually talked to, instead of jumping to the top.</li>
+<li>A brand-new contact gets “now”; editing an existing contact and background sync never
+bump recency.</li>
 </ul>
 <hr />
 <h2 id="15-server-side-storage-requirements">15. Server-side storage requirements</h2>
-<p>The addressbook is persisted by openxcap as an XCAP XML document, with specific constraints the gateway and app honor:</p>
+<p>The addressbook is persisted by openxcap as an XCAP XML document, with specific
+constraints the gateway and app honor:</p>
 <ul>
-<li><strong>Attribute values are XML text — strings only.</strong> Non-string scalars are coerced to their string form on write (<code>true</code>/<code>false</code>, numbers), and the app reads attribute flags tolerantly as either form.</li>
-<li><strong>A contact's URI list is replaced, not appended, on update,</strong> and is de-duplicated by URI value, so repeated edits cannot accumulate duplicate URIs.</li>
-<li><strong>Schemaless attribute bags are preserved verbatim</strong> through the gateway models, so organization / email / flags round-trip intact.</li>
-<li><strong>Contact payloads</strong> must carry a <code>uris[]</code> where each entry has its own id, a <code>default_uri</code>, <code>dialog</code> and <code>presence</code> objects, a non-empty name (the URI username is used when there is no real name), and <code>attributes</code>. Ids are server-style (<code>id</code> + digits). Group membership is sent as full contact objects via <code>addGroup</code> / <code>updateGroup</code>.</li>
-<li><strong><code>dialog</code> and <code>presence</code> are preserved, not reset.</strong> Sylk does not manage these event-handling policies, but the server requires them in the payload and overwrites the stored values with whatever is sent. An update therefore carries the existing server contact's <code>dialog</code>/<code>presence</code> through unchanged; only a genuinely new contact gets the defaults (<code>{policy: 'default', subscribe: false}</code>). This avoids clobbering a policy set by another client.</li>
+<li><strong>Attribute values are XML text — strings only.</strong> Non-string scalars are coerced to
+their string form on write (<code>true</code>/<code>false</code>, numbers), and the app reads attribute flags
+tolerantly as either form.</li>
+<li><strong>A contact’s URI list is replaced, not appended, on update,</strong> and is de-duplicated by
+URI value, so repeated edits cannot accumulate duplicate URIs.</li>
+<li><strong>Schemaless attribute bags are preserved verbatim</strong> through the gateway models, so
+organization / email / flags round-trip intact.</li>
+<li><strong>Contact payloads</strong> must carry a <code>uris[]</code> where each entry has its own id, a
+default URI (<code>defaultUri</code>; <code>default_uri</code> is accepted on writes, see Chapter 2), <code>dialog</code> and <code>presence</code> objects, a non-empty name (the URI username is
+used when there is no real name), and <code>attributes</code>. Ids are server-style (<code>id</code> + digits).
+Group membership is sent as full contact objects via <code>addGroup</code> / <code>updateGroup</code>.</li>
+<li><strong><code>dialog</code> and <code>presence</code> are preserved, not reset.</strong> Sylk does not manage these
+event-handling policies, but the server requires them in the payload and overwrites the
+stored values with whatever is sent. An update therefore carries the existing server
+contact’s <code>dialog</code>/<code>presence</code> through unchanged; only a genuinely new contact gets the
+defaults (<code>{policy: 'default', subscribe: false}</code>). This avoids clobbering a policy set
+by another client.</li>
 </ul>
 <hr />
 <h2 id="16-interoperability-with-other-clients">16. Interoperability with other clients</h2>
-<p>The XCAP addressbook is <strong>shared infrastructure</strong>. Blink, the web client, and any other SIP/XCAP client on the same account read and write the same document Sylk does. The rules below describe how Sylk behaves so other clients can converge with it instead of fighting it. The recurring failure mode is two clients reacting to each other's writes in a loop; everything here is designed to make that loop impossible.</p>
+<p>The XCAP addressbook is <strong>shared infrastructure</strong>. Blink, the web client, and any other
+SIP/XCAP client on the same account read and write the same document Sylk does. The rules
+below describe how Sylk behaves so other clients can converge with it instead of fighting
+it. The recurring failure mode is two clients reacting to each other’s writes in a loop;
+everything here is designed to make that loop impossible.</p>
 <h3 id="161-contact-resolution--one-uri-one-canonical-contact">16.1 Contact resolution — one URI, one canonical contact</h3>
-<p>Two clients can independently create a server contact for the <em>same</em> person: a phone re-creates a contact Blink already had, or two devices add the same address before either has synced. The result is several server contacts that share an identical URI set. Sylk resolves this <strong>deterministically</strong> so every device — and ideally every client — lands on the same survivor without coordinating:</p>
+<p>Two clients can independently create a server contact for the <em>same</em> person: a phone
+re-creates a contact Blink already had, or two devices add the same address before either
+has synced. The result is several server contacts that share an identical URI set. Sylk
+resolves this <strong>deterministically</strong> so every device — and ideally every client — lands on
+the same survivor without coordinating:</p>
 <ul>
-<li>Contacts are grouped by their full URI set (<code>default_uri</code> + <code>uris[]</code>, lowercased, sorted). A group of size one needs no resolution.</li>
-<li>Within a colliding group, the <strong>survivor is the contact with the lowest <code>id</code> by string comparison</strong> (<code>String(a.id).localeCompare(String(b.id))</code>). Because the rule is a pure function of the ids, every device computes the same winner offline, with no locking and no last-writer-wins races. Both the live fold path and the one-time first-sync migration use the lowest-id rule outright (a real local name is never lost — it is preserved locally and pushed back up to the survivor, see Chapter 8).</li>
-<li>Sylk then <strong>relinks</strong> locally: every local row whose <code>remote_id</code> pointed at a loser is repointed to the survivor's id, <strong>and the losing server contacts are deleted</strong> (see Chapter 16.2).</li>
+<li>Contacts are grouped by their full URI set (<code>default_uri</code> + <code>uris[]</code>, lowercased,
+sorted). A group of size one needs no resolution.</li>
+<li>Within a colliding group, the <strong>survivor is the contact with the lowest <code>id</code> by string
+comparison</strong> (<code>String(a.id).localeCompare(String(b.id))</code>). Because the rule is a pure
+function of the ids, every device computes the same winner offline, with no locking and
+no last-writer-wins races. Both the live fold path and the one-time first-sync migration
+use the lowest-id rule outright (a real local name is never lost — it is preserved locally
+and pushed back up to the survivor, see Chapter 8).</li>
+<li>Sylk then <strong>relinks</strong> locally: every local row whose <code>remote_id</code> pointed at a loser is
+repointed to the survivor’s id, <strong>and the losing server contacts are deleted</strong> (see Chapter 16.2).</li>
 </ul>
-<p><strong>Why "lowest id by string sort"?</strong> Ids are server-minted strings (<code>id</code> + digits). String comparison is stable, total, and identical on every platform, so two clients never disagree about which entry is canonical. Do not use numeric comparison, creation time, or "the one I made" — those diverge across clients.</p>
+<p><strong>Why “lowest id by string sort”?</strong> Ids are server-minted strings (<code>id</code> + digits). String
+comparison is stable, total, and identical on every platform, so two clients never disagree
+about which entry is canonical. Do not use numeric comparison, creation time, or “the one I
+made” — those diverge across clients.</p>
 <h3 id="162-deleting-the-duplicate-relink-then-delete">16.2 Deleting the duplicate (relink, then delete)</h3>
-<p>When folding duplicates Sylk <strong>relinks every local row onto the lowest-id survivor and then deletes the losing server contacts</strong>, in both the live fold path and the first-sync migration. The keeper is chosen by Chapter 16.1 (lowest id), so every device/client agrees on which entry survives and which are removed.</p>
-<p><strong>History — why this was once relink-only.</strong> Deleting a duplicate used to trigger a cascade: the Blink/desktop client reacted to the XCAP contact removal by issuing an <code>account-remove-conversation</code>, which the server stored and <strong>re-broadcast forever</strong>, burying the contact in the Deleted folder on every device. For a long time Sylk therefore <em>only</em> relinked and left the loser in place (harmless but cosmetic). <strong>That server-side issue has since been fixed</strong>, so the redundant entry is now removed outright rather than accumulating.</p>
-<p><strong>Ordering matters.</strong> Always relink local rows onto the survivor <em>first</em>, then delete the loser — never delete a contact a local row still points at. Each delete also drops any group left empty by the removal.</p>
+<p>When folding duplicates Sylk <strong>relinks every local row onto the lowest-id survivor and then
+deletes the losing server contacts</strong>, in both the live fold path and the first-sync
+migration. The keeper is chosen by Chapter 16.1 (lowest id), so every device/client agrees on which
+entry survives and which are removed.</p>
+<p><strong>History — why this was once relink-only.</strong> Deleting a duplicate used to trigger a cascade:
+the Blink/desktop client reacted to the XCAP contact removal by issuing an
+<code>account-remove-conversation</code>, which the server stored and <strong>re-broadcast forever</strong>, burying
+the contact in the Deleted folder on every device. For a long time Sylk therefore <em>only</em>
+relinked and left the loser in place (harmless but cosmetic). <strong>That server-side issue has
+since been fixed</strong>, so the redundant entry is now removed outright rather than accumulating.</p>
+<p><strong>Ordering matters.</strong> Always relink local rows onto the survivor <em>first</em>, then delete the
+loser — never delete a contact a local row still points at. Each delete also drops any group
+left empty by the removal.</p>
 <h3 id="163-conversation-remove-is-only-honored-when-the-contact-is-truly-gone">16.3 Conversation-remove is only honored when the contact is truly gone</h3>
-<p>A delete is signalled two ways that can arrive in any order: the XCAP contact disappears, and an <code>account-remove-conversation</code> event fires. Sylk treats the <strong>XCAP addressbook as the authority</strong>: a conversation-remove only buries a contact when that URI is <em>also</em> absent from the live server addressbook. If the URI is still a live server contact, the remove is treated as spurious — typically another client reacting to a dedup, or a stale re-broadcast — and is <strong>ignored</strong>, so a contact that still exists is never dropped into the Deleted folder.</p>
-<p>For other clients this cuts both ways: do not emit a conversation-remove for a contact that still exists in XCAP (e.g. as a reaction to someone else's relink/dedup), and do not expect Sylk to act on one. A genuine delete removes the contact from XCAP first; the remove then applies because the URI is absent. Sylk also stamps removes with the action time, so a replayed or stale remove can never tombstone activity that happened after it.</p>
+<p>A delete is signalled two ways that can arrive in any order: the XCAP contact disappears,
+and an <code>account-remove-conversation</code> event fires. Sylk treats the <strong>XCAP addressbook as the
+authority</strong>: a conversation-remove only buries a contact when that URI is <em>also</em> absent
+from the live server addressbook. If the URI is still a live server contact, the remove is
+treated as spurious — typically another client reacting to a dedup, or a stale
+re-broadcast — and is <strong>ignored</strong>, so a contact that still exists is never dropped into the
+Deleted folder.</p>
+<p>For other clients this cuts both ways: do not emit a conversation-remove for a contact that
+still exists in XCAP (e.g. as a reaction to someone else’s relink/dedup), and do not expect
+Sylk to act on one. A genuine delete removes the contact from XCAP first; the remove then
+applies because the URI is absent. Sylk also stamps removes with the action time, so a
+replayed or stale remove can never tombstone activity that happened after it.</p>
+<p>The two signals race. sylk-desktop holds a live remove whose contact is still in the
+addressbook for up to ten minutes and applies it once the addressbook shows the address gone;
+a journal replay for a live contact is dropped (Chapter 27.7).</p>
 <h3 id="164-payload-conventions-other-clients-must-respect">16.4 Payload conventions other clients must respect</h3>
-<p>To round-trip cleanly through the same document, other clients should follow the same conventions Sylk relies on (full detail in Chapter 3, Chapter 6, Chapter 15):</p>
+<p>To round-trip cleanly through the same document, other clients should follow the same
+conventions Sylk relies on (full detail in Chapter 3, Chapter 6, Chapter 15):</p>
 <ul>
-<li><strong>Preserve <code>dialog</code>/<code>presence</code>.</strong> The server overwrites these with whatever is sent. Carry the existing values through on update; only set the <code>{policy:'default', subscribe:false}</code> defaults for a genuinely new contact. Resetting them clobbers a policy another client set.</li>
-<li><strong>Preserve the <code>attributes</code> bag verbatim.</strong> It carries cross-device fields with no first-class column (<code>organization</code>, <code>email</code>, <code>bypassdnd</code>, <code>muted</code>, <code>read_receipts</code>, <code>caregiver</code>). Attribute values are XML text, so write scalars as strings (<code>"true"</code> / <code>"false"</code>) and read them tolerantly. Do not drop attributes you don't recognize.</li>
-<li><strong>Attributes are additive.</strong> An absent attribute is indistinguishable from "false", so adoption only <em>sets</em> what is present and never <em>removes</em> a local flag because the server's copy is empty. Turning a flag on propagates; turning it off is per-device. Don't assume a missing attribute means another client cleared it.</li>
-<li><strong>Replace, don't append, the URI list, and de-duplicate by URI value</strong> so repeated edits can't accumulate duplicate URIs on one contact.</li>
-<li><strong>Match URI normalization.</strong> Phone-number URIs are stored bare, without a domain; the conference bridge domain is swapped at the boundary (<code>videoconference.X ↔︎ conference.X</code>); IP-literal (<code>user@1.2.3.4</code>), <code>@local</code> Bonjour, and conference rooms whose username starts with <code>0</code> are treated as junk and not imported. A client that stores a phone number with a domain, or imports these junk forms, creates URI-set mismatches that defeat the dedup in Chapter 16.1.</li>
-<li><strong>Don't replace a real display name with a URI-echo.</strong> A name equal to the URI, the URI without <code>@</code>, or the username is treated as "no real name". Pushing an echo over a real name will be rejected by Sylk's resolution and just churns the document.</li>
-<li><strong>Honor the migration marker on the self contact.</strong> Once any client has run the one-time reconciliation, it stamps <code>MigratedVersion</code> (the migration version) on the account owner's own XCAP contact (the contact whose URI is the account). A client that performs an equivalent first-sync cleanup (purging junk, folding duplicates, deleting server entries) must check this attribute first and <strong>skip</strong> that cleanup when the server already carries a marker at or above its own version — otherwise it re-creates contacts a previous client deleted. Publish the same marker after completing your own cleanup so other clients defer to it. See Chapter 9.</li>
+<li><strong>Preserve <code>dialog</code>/<code>presence</code>.</strong> The server overwrites these with whatever is sent.
+Carry the existing values through on update; only set the <code>{policy:'default',   subscribe:false}</code> defaults for a genuinely new contact. Resetting them clobbers a policy
+another client set.</li>
+<li><strong>Preserve the <code>attributes</code> bag verbatim.</strong> It carries cross-device fields with no
+first-class column (<code>organization</code>, <code>email</code>, <code>bypassdnd</code>, <code>muted</code>, <code>read_receipts</code>,
+<code>caregiver</code>). Attribute values are XML text, so write scalars as strings (<code>"true"</code> /
+<code>"false"</code>) and read them tolerantly. Do not drop attributes you don’t recognize.</li>
+<li><strong>Attributes are additive.</strong> An absent attribute is indistinguishable from “false”, so
+adoption only <em>sets</em> what is present and never <em>removes</em> a local flag because the server’s
+copy is empty. Turning a flag on propagates; turning it off is per-device. Don’t assume a
+missing attribute means another client cleared it.</li>
+<li><strong>Replace, don’t append, the URI list, and de-duplicate by URI value</strong> so repeated edits
+can’t accumulate duplicate URIs on one contact.</li>
+<li><strong>A phone number must announce itself with <code>+</code> or a leading <code>0</code>.</strong> The detector
+(<code>utils.isPhoneNumber</code>, <code>/^(\+|0)[\d\-()_\s]+$/</code> on the local part) deliberately
+rejects a bare digit string, so <code>31208005160@sylk.link</code> is an ordinary SIP
+contact and never gets <code>type=tel</code>, never reaches the PSTN canonicalisation, and
+never lands in the Tel group. This is not an oversight to be widened. Digits
+with no prefix are ambiguous by nature: <code>1233@sylk.link</code>, <code>3333@sylk.link</code> and
+<code>4444@sylk.link</code> are extensions on this very account, and a rule generous
+enough to catch <code>31208005160</code> catches those too — and misfiling one rewrites
+its address in the shared document for every client. A number that should be
+dialable is written <code>+31208005160</code>, by whoever adds it; a client does not get
+to guess. Reviewed and reaffirmed 2026-09-09; the alternatives considered and
+rejected were a home-country-code prefix test and an
+only-when-a-canonical-twin-already-exists test.</li>
+<li><strong>The domain goes on at the wire, never in storage.</strong> A phone contact is stored
+bare and the account domain is appended only when a call or a message is
+actually sent, at the one boundary each client has for that (sylk-mobile:
+<code>_wireUri</code> in <code>_sendMessage</code>, and <code>callKeepStartCall</code> / <code>CallManager.startCall</code>;
+Blink: <code>normalize_sip_uri_for_outgoing_session</code>). Storing the wire form
+instead is the mistake this rule exists to prevent — it also bypasses the
+account’s dial plan, because the PSTN rewrite is gated on the URI having no
+domain yet.</li>
+<li><strong>Match URI normalization.</strong> Phone-number URIs are stored bare, without a domain; the
+conference bridge domain is swapped at the boundary (<code>videoconference.X ↔︎ conference.X</code>);
+IP-literal (<code>user@1.2.3.4</code>), <code>@local</code> Bonjour, and conference rooms whose username starts
+with <code>0</code> are treated as junk and not imported. A client that stores a phone number with a
+domain, or imports these junk forms, creates URI-set mismatches that defeat the dedup in
+Chapter 16.1.</li>
+<li><strong>Don’t replace a real display name with a URI-echo.</strong> A name equal to the URI, the URI
+without <code>@</code>, or the username is treated as “no real name”. Pushing an echo over a real
+name will be rejected by Sylk’s resolution and just churns the document.</li>
+<li><strong>Honor the migration marker on the self contact.</strong> Once any client has run the one-time
+reconciliation, it stamps <code>MigratedVersion</code> (the migration version) on the account
+owner’s own XCAP contact (the contact whose URI is the account). A client that performs an
+equivalent first-sync cleanup (purging junk, folding duplicates, deleting server entries)
+must check this attribute first and <strong>skip</strong> that cleanup when the server already carries a
+marker at or above its own version — otherwise it re-creates contacts a previous client
+deleted. Publish the same marker after completing your own cleanup so other clients defer
+to it. See Chapter 9.</li>
 </ul>
 <hr />
 <h2 id="17-conference-rooms-videoconference--conference-mangling">17. Conference rooms (videoconference ↔︎ conference mangling)</h2>
-<p>Conference rooms live under two linked bridge domains: the <strong>local/Sylk</strong> world addresses a room as <code>&lt;room&gt;@videoconference.X</code> (the <code>defaultConferenceDomain</code>, e.g. <code>videoconference.sip2sip.info</code>), while the <strong>server / SIP</strong> world — XCAP, CDRs, the focus — uses the paired SIP bridge <code>&lt;room&gt;@conference.X</code> (e.g. <code>conference.sip2sip.info</code>). The two are a fixed client convention derived by swapping the host prefix (<code>videoconference. ⇄ conference.</code>); only the domain is swapped, the room number (user part) is never touched.</p>
+<p>Conference rooms live under two linked bridge domains: the <strong>local/Sylk</strong> world addresses a
+room as <code>&lt;room&gt;@videoconference.X</code> (the <code>defaultConferenceDomain</code>, e.g.
+<code>videoconference.sip2sip.info</code>), while the <strong>server / SIP</strong> world — XCAP, CDRs, the focus —
+uses the paired SIP bridge <code>&lt;room&gt;@conference.X</code> (e.g. <code>conference.sip2sip.info</code>). The two
+are a fixed client convention derived by swapping the host prefix
+(<code>videoconference. ⇄ conference.</code>); only the domain is swapped, the room number (user part)
+is never touched.</p>
 <h3 id="171-the-mangle-in-one-place">17.1 The mangle, in one place</h3>
-<table>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 37%" />
+<col style="width: 22%" />
+</colgroup>
 <thead>
 <tr class="header">
 <th>direction</th>
@@ -303,51 +726,742 @@ blockquote{border-left:4px solid #d0d7de;margin:0;padding:0 1em;color:#57606a}
 </tr>
 </tbody>
 </table>
-<p><code>_abServerUris(s)</code> runs every server URI through <code>_abNormServerUri</code>, so the rest of the code only ever sees the local <code>videoconference.X</code> form — matching, dedup (Chapter 16.1), display, and the contact index all work without special-casing conference rooms. <code>_abContactServerPayload</code> runs the URIs back through <code>_abLocalToServerUri</code>, so any write lands on the <code>conference.X</code> form. The swap is scoped to the <strong>configured</strong> domain pair; a non-default conference domain passes through unchanged on both sides (kept consistent because the same function is used in both directions).</p>
+<p><code>_abServerUris(s)</code> runs every server URI through <code>_abNormServerUri</code>, so the rest of the code
+only ever sees the local <code>videoconference.X</code> form — matching, dedup (Chapter 16.1), display, and the
+contact index all work without special-casing conference rooms. <code>_abContactServerPayload</code>
+runs the URIs back through <code>_abLocalToServerUri</code>, so any write lands on the <code>conference.X</code>
+form. The swap is scoped to the <strong>configured</strong> domain pair; a non-default conference domain
+passes through unchanged on both sides (kept consistent because the same function is used in
+both directions).</p>
 <h3 id="172-the-client-creates-the-room-contact-cdr-driven-stored-local--pushed-server">17.2 The client creates the room contact (CDR-driven), stored local / pushed server</h3>
-<p>A conference room is <strong>discovered from call history and created by the client</strong> — locally under <code>@videoconference.X</code>, and on the server (XCAP) under <code>@conference.X</code>. The flow:</p>
+<p>A conference room is <strong>discovered from call history and created by the client</strong> — locally
+under <code>@videoconference.X</code>, and on the server (XCAP) under <code>@conference.X</code>. The flow:</p>
 <ul>
-<li><strong>Discover + store local.</strong> Server call-history CDRs name the remote party on the SIP bridge (<code>&lt;room&gt;@conference.X</code>). <code>processServerCallHistory</code> un-mangles that to <code>&lt;room&gt;@videoconference.X</code> (instead of dropping it, as it used to), and <code>saveHistory</code> <strong>creates the local room contact on demand</strong> if it doesn't exist yet (tagging it <code>Conference</code>) and otherwise updates it. So every joined room becomes a local contact, named from the CDR display name / room number, and is always stored under the <code>videoconference.X</code> form.</li>
-<li><strong>Create on the server.</strong> A room contact with no <code>remote_id</code> is <strong>pushed to XCAP by the client</strong> like any other local-only contact (it is <em>not</em> excluded from <code>unlinkedList</code>). The push mangles the URI back to <code>&lt;room&gt;@conference.X</code> via <code>_abLocalToServerUri</code> / <code>_abContactServerPayload</code>, and the adopt-by-URI matcher (<code>_abFindServerContactByUri</code>) un-mangles, so the push <strong>adopts an existing</strong> server room rather than duplicating it.</li>
+<li><strong>Discover + store local.</strong> Server call-history CDRs name the remote party on the SIP
+bridge (<code>&lt;room&gt;@conference.X</code>). <code>processServerCallHistory</code> un-mangles that to
+<code>&lt;room&gt;@videoconference.X</code> (instead of dropping it, as it used to), and <code>saveHistory</code>
+<strong>creates the local room contact on demand</strong> if it doesn’t exist yet (tagging it
+<code>Conference</code>) and otherwise updates it. So every joined room becomes a local contact, named
+from the CDR display name / room number, and is always stored under the <code>videoconference.X</code>
+form.</li>
+<li><strong>Create on the server.</strong> A room contact with no <code>remote_id</code> is <strong>pushed to XCAP by the
+client</strong> like any other local-only contact (it is <em>not</em> excluded from <code>unlinkedList</code>). The
+push mangles the URI back to <code>&lt;room&gt;@conference.X</code> via <code>_abLocalToServerUri</code> /
+<code>_abContactServerPayload</code>, and the adopt-by-URI matcher (<code>_abFindServerContactByUri</code>)
+un-mangles, so the push <strong>adopts an existing</strong> server room rather than duplicating it.</li>
 </ul>
-<p>So the two representations stay paired: local <code>@videoconference.X</code> ⇄ server <code>@conference.X</code>, with the client owning both ends. (There is no server-side auto-creation; the client is the one that writes the XCAP room contact.)</p>
+<p>So the two representations stay paired: local <code>@videoconference.X</code> ⇄ server <code>@conference.X</code>,
+with the client owning both ends. (There is no server-side auto-creation; the client is the
+one that writes the XCAP room contact.)</p>
 <h3 id="173-anomalies-and-exclusions">17.3 Anomalies and exclusions</h3>
-<p>A conference room whose <strong>username starts with <code>0</code></strong> is treated as junk (<code>_abIsConferenceAnomaly</code>) — not imported locally, purged from the server, kept out of the push, and excluded from the CDR-driven create path. Real conference rooms are also excluded from the orphan → graveyard pass (Chapter 18): they are re-derived from call history, so a missing server entry means "re-create it on the next push", not "bury it".</p>
+<p>A conference room whose <strong>username starts with <code>0</code></strong> is treated as junk (<code>_abIsConferenceAnomaly</code>)
+— not imported locally, purged from the server, kept out of the push, and excluded from the
+CDR-driven create path. Real conference rooms are also excluded from the orphan → graveyard
+pass (Chapter 18): they are re-derived from call history, so a missing server entry means “re-create
+it on the next push”, not “bury it”.</p>
 <hr />
 <h2 id="18-stale-server-links-orphan-relink-and-orphan--graveyard">18. Stale server links: orphan-relink and orphan → graveyard</h2>
-<p>A local row's <code>remote_id</code> can end up pointing at a server contact that no longer exists — e.g. another client deleted that XCAP entry, or an older "wrong-survivor" dedup removed the keeper a local row was linked to. Such a row is <strong>orphaned</strong>: it is skipped by the adoption loop (its <code>remote_id</code> matches no live server id) and ignored by the local-only push (it <em>does</em> carry a <code>remote_id</code>, just a dead one), so it neither converges nor pushes. On every authoritative load Sylk repairs these, in order:</p>
-<ol>
-<li><strong>Orphan-relink.</strong> If the orphan's URI set still maps to a <strong>live</strong> server contact (the entry was re-created under a new id, or a duplicate sharing the URI survives), repoint <code>remote_id</code> onto that live contact (lowest id wins, per Chapter 16.1). The name sync-up (Chapter 8) then pushes the real local name up to the survivor.</li>
-<li><strong>Orphan → graveyard.</strong> If the orphan's <code>remote_id</code> is gone <strong>and</strong> none of its URIs are on the server, the contact was genuinely deleted server-side. Sylk <strong>clears <code>remote_id</code> and tombstones it (<code>deleted = 1</code>)</strong> so it becomes a real Graveyard entry instead of a phantom active contact. Conference rooms, <code>@local</code>, and the own-account contact are excluded.</li>
+<p>A local row’s <code>remote_id</code> can end up pointing at a server contact that no longer exists —
+e.g. another client deleted that XCAP entry, or an older “wrong-survivor” dedup removed the
+keeper a local row was linked to. Such a row is <strong>orphaned</strong>: it is skipped by the adoption
+loop (its <code>remote_id</code> matches no live server id) and ignored by the local-only push (it
+<em>does</em> carry a <code>remote_id</code>, just a dead one), so it neither converges nor pushes. On every
+authoritative load Sylk repairs these, in order:</p>
+<ol type="1">
+<li><strong>Orphan-relink.</strong> If the orphan’s URI set still maps to a <strong>live</strong> server contact (the
+entry was re-created under a new id, or a duplicate sharing the URI survives), repoint
+<code>remote_id</code> onto that live contact (lowest id wins, per Chapter 16.1). The name sync-up (Chapter 8) then
+pushes the real local name up to the survivor.</li>
+<li><strong>Orphan → graveyard.</strong> If the orphan’s <code>remote_id</code> is gone <strong>and</strong> none of its URIs are on
+the server, the contact was genuinely deleted server-side. Sylk <strong>clears <code>remote_id</code> and
+tombstones it (<code>deleted = 1</code>)</strong> so it becomes a real Graveyard entry instead of a phantom
+active contact. Conference rooms, <code>@local</code>, and the own-account contact are excluded.</li>
 </ol>
-<p>Both passes run only on a <strong>confirmed-good</strong> snapshot — the empty-snapshot safety gate (Chapter 11) bails the entire reconciliation when the server returns zero contacts and zero groups while local contacts exist, so a failed fetch can never mass-relink or mass-bury. (A <em>partial</em> fetch is not caught by that gate; tightening this to a drop-ratio threshold is a known possible hardening.)</p>
+<p>Both passes run only on a <strong>confirmed-good</strong> snapshot — the empty-snapshot safety gate (Chapter 11)
+bails the entire reconciliation when the server returns zero contacts and zero groups while
+local contacts exist, so a failed fetch can never mass-relink or mass-bury. (A <em>partial</em>
+fetch is not caught by that gate; tightening this to a drop-ratio threshold is a known
+possible hardening.)</p>
 <hr />
 <h2 id="19-uri-type-on-the-server-payload">19. URI <code>type</code> on the server payload</h2>
-<p>Each URI written to the server carries a <code>type</code>: a phone number is <code>tel</code>, any regular <code>user@domain</code> SIP address is <code>sip</code> (<code>utils.isPhoneNumber</code> decides, with the conference domain excluded). <code>default_uri.type</code> mirrors the chosen default URI's type. Empty types are no longer written.</p>
+<p>Each URI written to the server carries a <code>type</code>: a phone number is <code>tel</code>, any regular
+<code>user@domain</code> SIP address is <code>sip</code> (<code>utils.isPhoneNumber</code> decides, with the conference domain
+excluded). <code>default_uri.type</code> mirrors the chosen default URI’s type. Empty types are no
+longer written.</p>
 <hr />
 <h2 id="20-diagnostics">20. Diagnostics</h2>
-<p>On the <strong>first authoritative load per launch</strong>, Sylk prints two console tables (read at a glance in metro instead of 100+ lines):</p>
+<p>On the <strong>first authoritative load per launch</strong>, Sylk prints two console tables (read at a
+glance in metro instead of 100+ lines):</p>
 <ul>
-<li><code>[ab] CONTACTS (N)</code> — the server XCAP addressbook verbatim, one row per server contact: <code>SERVER DN</code> (the name as stored on the server, no echo-blanking), <code>LOCAL DN</code> (the matched local row's name, by <code>remote_id</code> then shared URI), <code>URI</code>, and <code>SERVER_ID</code>. A divergence between the two DN columns is visible at a glance.</li>
-<li><code>[ab] CONTACTS DIFF (M = local L − server S)</code> — the local rows that are <strong>not</strong> live server contacts, i.e. exactly what accounts for the gap between the local count and the server count, each categorized: <code>self</code>, <code>deleted</code>, <code>conference</code>, <code>junk</code>, <code>orphan-link</code> (dead <code>remote_id</code>, should be rare once Chapter 18 runs), and <code>local-only</code> (never pushed).</li>
+<li><code>[ab] CONTACTS (N)</code> — the server XCAP addressbook verbatim, one row per server contact:
+<code>SERVER DN</code> (the name as stored on the server, no echo-blanking), <code>LOCAL DN</code> (the matched
+local row’s name, by <code>remote_id</code> then shared URI), <code>URI</code>, and <code>SERVER_ID</code>. A divergence
+between the two DN columns is visible at a glance.</li>
+<li><code>[ab] CONTACTS DIFF (M = local L − server S)</code> — the local rows that are <strong>not</strong> live server
+contacts, i.e. exactly what accounts for the gap between the local count and the server
+count, each categorized: <code>self</code>, <code>deleted</code>, <code>conference</code>, <code>junk</code>, <code>orphan-link</code> (dead
+<code>remote_id</code>, should be rare once Chapter 18 runs), and <code>local-only</code> (never pushed).</li>
 </ul>
 <hr />
 <h2 id="21-backup--restore">21. Backup &amp; restore</h2>
 <p>Contact data is protected in layers, from fully automatic to manual.</p>
 <ul>
-<li><strong>The server is the live backup.</strong> Because every contact and group is replicated to the SylkServer XCAP addressbook (Chapter 9), the authoritative copy lives off-device. A reinstall or a brand-new device restores the full addressbook just by signing in and re-fetching — there is no manual step. The empty-snapshot safety gate (Chapter 11) makes sure a transient empty fetch is never mistaken for "everything deleted", so the local copy is never blanked by a server blip.</li>
-<li><strong>Automatic local snapshots (recovery).</strong> On each authoritative load the client writes a JSON snapshot of the full server addressbook — contacts, groups, and policies — into the account's private folder (<code>&lt;account&gt;/addressbook/history/</code>), throttled to at most one per week (<code>_abDumpHistory</code>). These are a point-in-time recovery / audit record of what the server held, kept per account and purged when the account is deleted (<code>_abPurgeDumpDir</code>).</li>
-<li><strong>Manual backup.</strong> A "Backup contacts" action (<code>backupContacts</code>) writes an on-demand JSON of the authoritative <strong>local</strong> rows straight from SQLite into the same folder (<code>contacts-local-&lt;timestamp&gt;.json</code>). Unlike the weekly snapshot it is not throttled and captures everything on the device, including local-only contacts not yet put to the server.</li>
-<li><strong>Restore from trash (in-app).</strong> Soft-deleted contacts move to the Deleted folder rather than being erased (Chapter 12); <code>restoreContacts</code> revives a selection back into the active list, and <code>restoreGraveyardContacts</code> revives tombstoned entries from the Graveyard. This is the everyday "undo a delete".</li>
-<li><strong>Restoring from a snapshot file</strong> is an operator/manual step: the JSON dumps are human-readable records intended for recovery and debugging, not an in-app "import this file" button. Routine restore is the server re-fetch above; the snapshots are the safety net when the server copy itself needs to be reconstructed.</li>
+<li><strong>The server is the live backup.</strong> Because every contact and group is replicated to the
+SylkServer XCAP addressbook (Chapter 9), the authoritative copy lives off-device. A
+reinstall or a brand-new device restores the full addressbook just by signing in and
+re-fetching — there is no manual step. The empty-snapshot safety gate (Chapter 11) makes
+sure a transient empty fetch is never mistaken for “everything deleted”, so the local
+copy is never blanked by a server blip.</li>
+<li><strong>Automatic local snapshots (recovery).</strong> On each authoritative load the client writes a
+JSON snapshot of the full server addressbook — contacts, groups, and policies — into the
+account’s private folder (<code>&lt;account&gt;/addressbook/history/</code>), throttled to at most one per
+week (<code>_abDumpHistory</code>). These are a point-in-time recovery / audit record of what the
+server held, kept per account and purged when the account is deleted (<code>_abPurgeDumpDir</code>).</li>
+<li><strong>Manual backup.</strong> A “Backup contacts” action (<code>backupContacts</code>) writes an on-demand JSON
+of the authoritative <strong>local</strong> rows straight from SQLite into the same folder
+(<code>contacts-local-&lt;timestamp&gt;.json</code>). Unlike the weekly snapshot it is not throttled and
+captures everything on the device, including local-only contacts not yet put to the
+server.</li>
+<li><strong>Restore from trash (in-app).</strong> Soft-deleted contacts move to the Deleted folder rather
+than being erased (Chapter 12); <code>restoreContacts</code> revives a selection back into the active
+list, and <code>restoreGraveyardContacts</code> revives tombstoned entries from the Graveyard. This
+is the everyday “undo a delete”.</li>
+<li><strong>Restoring from a snapshot file</strong> is an operator/manual step: the JSON dumps are
+human-readable records intended for recovery and debugging, not an in-app “import this
+file” button. Routine restore is the server re-fetch above; the snapshots are the safety
+net when the server copy itself needs to be reconstructed.</li>
 </ul>
 <hr />
 <h2 id="22-pgp-private-key-save-on-the-self-contact">22. PGP private-key save on the self contact</h2>
-<p>The account's PGP keypair is saved on the user's <strong>own</strong> server contact so it replicates across the user's devices over the same XCAP channel as everything else — no separate transport, no manual export. The keypair travels in the self contact's <code>keys</code> attribute (Chapter 6) as a JSON record:</p>
-<pre><code>{ private_key, public_key, device, timestamp }
-</code></pre>
-<p><code>private_key</code> is <strong>symmetrically encrypted with the account (SIP) password</strong> and is never stored in clear. The <code>public_key</code>, the writing <code>device</code> label, and an ISO <code>timestamp</code> travel in clear so any device can see which device saved the key and when. Because the record is just another contact attribute, it rides the normal contact-write path (Chapter 9) to the server and on to the user's other devices.</p>
-<p><strong>Save (key landing).</strong> When a keypair is generated or imported on a device, the save fires (a tick after the keypair is committed locally, and again on each authoritative addressbook load). It is <strong>idempotent</strong>: it only writes when the self contact carries no <code>keys</code> attribute on the server, so the first device to set up the account wins and later loads are no-ops. If the account has no password available, the save is <strong>skipped</strong> — an unprotected key is never stored.</p>
-<p><strong>Restore (new or keyless device).</strong> A device that signs in without a local keypair but finds a saved <code>keys</code> record on its own server contact decrypts <code>private_key</code> with the account password and imports the keypair automatically. This supersedes the manual "import key" modal: signing in on a new device with the right password is enough to recover messaging. A wrong or missing password just logs and leaves the manual import as the fallback.</p>
-<p><strong>Re-save on password change.</strong> Because <code>private_key</code> is encrypted with the account password, changing the password leaves the saved copy encrypted with the <strong>old</strong> one, which a later restore could no longer open. A successful password change therefore forces a re-save: the private key is re-encrypted with the <strong>new</strong> password and the <code>keys</code> attribute is rewritten through the normal contact update. The contact update is <strong>delayed by 5 seconds</strong> so the server has time to commit the new password before the rewrite goes out. This is <strong>best-effort</strong> — the password change has already succeeded on the server, so a re-save failure is logged but never surfaced as a password-change error (the next authoritative load will not repair it, since a saved record already exists; recovery is to change the password again or re-import).</p>
+<p>The account’s PGP keypair is saved on the user’s <strong>own</strong> server contact so it
+replicates across the user’s devices over the same XCAP channel as everything else — no
+separate transport, no manual export. The keypair travels in the self contact’s <code>keys</code>
+attribute (Chapter 6) as a JSON record:</p>
+<pre><code>{ private_key, public_key, device, timestamp }</code></pre>
+<p><code>private_key</code> is <strong>symmetrically encrypted with the account (SIP) password</strong> and is never
+stored in clear. The <code>public_key</code>, the writing <code>device</code> label, and an ISO <code>timestamp</code>
+travel in clear so any device can see which device saved the key and when. Because the
+record is just another contact attribute, it rides the normal contact-write path
+(Chapter 9) to the server and on to the user’s other devices.</p>
+<p><strong>Save (key landing).</strong> When a keypair is generated or imported on a device, the save
+fires (a tick after the keypair is committed locally, and again on each authoritative
+addressbook load). It is <strong>idempotent</strong>: it only writes when the self contact carries no
+<code>keys</code> attribute on the server, so the first device to set up the account wins and later
+loads are no-ops. If the account has no password available, the save is <strong>skipped</strong> —
+an unprotected key is never stored.</p>
+<p><strong>Restore (new or keyless device).</strong> A device that signs in without a local keypair but
+finds a saved <code>keys</code> record on its own server contact decrypts <code>private_key</code> with the account
+password and imports the keypair automatically. This supersedes the manual “import key”
+modal: signing in on a new device with the right password is enough to recover messaging.
+A wrong or missing password just logs and leaves the manual import as the fallback.</p>
+<p><strong>Re-save on password change.</strong> Because <code>private_key</code> is encrypted with the account
+password, changing the password leaves the saved copy encrypted with the <strong>old</strong> one,
+which a later restore could no longer open. A successful password change therefore forces
+a re-save: the private key is re-encrypted with the <strong>new</strong> password and the <code>keys</code>
+attribute is rewritten through the normal contact update. The contact update is <strong>delayed
+by 5 seconds</strong> so the server has time to commit the new password before the rewrite goes
+out. This is <strong>best-effort</strong> — the
+password change has already succeeded on the server, so a re-save failure is logged but
+never surfaced as a password-change error (the next authoritative load will not repair it,
+since a saved record already exists; recovery is to change the password again or re-import).</p>
+<hr />
+<h2 id="23-shared-groups-the-day-the-calls-group-vanished">23. Shared groups: the day the Calls group vanished</h2>
+<p>On 2026-09-05 the account’s Calls group went from 30 members to 1. This client
+deleted it — a Blink Mobile 8.4.1 handset issued
+<code>DELETE …/groups/id1784208880483595094913657</code> three seconds after connecting —
+and everything in chapters 5b.1 and 24 exists because of it.</p>
+<h3 id="what-the-heal-believed">What the heal believed</h3>
+<p>The <strong>self-heal stale dynamic groups</strong> loop treated <code>calls</code> and <code>recent</code> as
+<em>locally authoritative</em>: they are derived on the handset from its own call log,
+so a copy of one sitting on the server can only be this device’s own leftover,
+and the heal deletes it.</p>
+<p>That premise held for exactly as long as this client was the only one writing
+them. Blink desktop then started publishing a Calls group of its own, and
+nothing told the heal. It saw a server-only <code>Calls</code>, concluded it was stale,
+and removed it. Desktop’s in-flight <code>PUT</code> of the same document took a
+<strong>412 Precondition Failed</strong>, re-<code>GET</code>, and sipsimple’s reload correctly dropped
+the local group — with its 30 memberships.</p>
+<h3 id="the-fix-in-one-negation">The fix, in one negation</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode js"><code class="sourceCode javascript"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true"></a>_abIsDeviceLocalGroup <span class="op">=</span> (key<span class="op">,</span> g) <span class="kw">=&gt;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true"></a>    <span class="kw">this</span><span class="op">.</span><span class="at">_abAutoLocalGroups</span><span class="op">.</span><span class="fu">has</span>(key) <span class="op">&amp;&amp;</span> <span class="op">!</span><span class="kw">this</span><span class="op">.</span><span class="fu">_abGroupKind</span>(g)<span class="op">;</span></span></code></pre></div>
+<p>A <code>kind</code> means another client created the group as part of the cross-client
+contract, so its membership is <strong>shared</strong>, not derived — the heal can no longer
+delete it, and this device adopts it instead of fighting it.</p>
+<p><code>_abIsDeviceLocalName(key)</code> answers the same question for a group that does not
+exist on the server yet, where only the name can answer it: create the
+categories we know a kind for (Calls), never the purely derived ones (Messages,
+Recent).</p>
+<h3 id="rules-that-came-out-of-it">Rules that came out of it</h3>
+<ul>
+<li><strong>Never delete a server group you did not create</strong>, unless it carries no
+<code>kind</code> <em>and</em> its key is one this device derives.</li>
+<li><strong>A group that exists on both sides and means the same thing on both sides
+must actually cross.</strong> Before this, desktop published a Calls group nobody on
+mobile read, while the handset held 33 contacts tagged <code>calls</code> that never
+reached the server.</li>
+<li><strong>Creation re-reads the live set.</strong> <code>_abCreateGroup</code> gates on a snapshot and
+then re-checks live <code>kind</code> and reserved id before writing, so two devices
+racing to create the same group produce one group.</li>
+</ul>
+<hr />
+<h2 id="24-startup-repairs">24. Startup repairs</h2>
+<p>Four kinds of drift had accumulated in the shared document. All four are
+repaired automatically, by this client <strong>and</strong> by Blink desktop, so it does not
+matter which one the user launches first. Both sides run the same rules; the
+symmetry is the point, because a repair only one client performs is undone by
+the other.</p>
+<h3 id="241-the-conference-domain">24.1 The conference domain</h3>
+<p><code>_abServerConferenceUri</code> rewrites <code>videoconference.X</code> → <code>conference.X</code>
+unconditionally at the server boundary, and this client never uploads the
+<code>videoconference.</code> form again. Rooms addressed the other way are not reachable
+from Blink on macOS (chapter 17 has the two-domain background).</p>
+<p>Comparison is by <strong>domain</strong>, not by whole address: a contact whose URI has
+already been repaired no longer matches a whole-address test, which is how a
+display name was left reading <code>338318@videoconference.sip2sip.info</code> after its
+URI had been fixed.</p>
+<h3 id="242-display-names-that-echo-the-uri">24.2 Display names that echo the URI</h3>
+<p>A name equal to the address, the address without <code>@</code>, or the username is not a
+name — it is the absence of one (chapter 4). For a conference room the
+replacement is the <strong>room number</strong>, not the whole address: <code>338318</code>, not
+<code>338318@conference.sip2sip.info</code>. Matching is on the local part, for the same
+reason as 24.1.</p>
+<p><strong>What a repair may write instead is narrower than what counts as an echo.</strong> “No
+real name” decides whether a name may be <em>filled</em> (25.5). It does not license
+rewriting one echo into another. The reference is Blink’s
+<code>echoed_name_replacement</code> (HistoryManager.py), which sylk-desktop ports exactly
+(<code>contactPayload.nameReplacement</code>):</p>
+<table>
+<colgroup>
+<col style="width: 35%" />
+<col style="width: 24%" />
+<col style="width: 40%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>stored name</th>
+<th>address</th>
+<th>repaired name</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>338318@videoconference.sip2sip.info</code></td>
+<td><code>338318@conference.sip2sip.info</code></td>
+<td><code>338318</code> (a room is its number)</td>
+</tr>
+<tr class="even">
+<td><code>+31618853125@sylk.link</code></td>
+<td><code>+31618853125</code></td>
+<td><code>+31618853125</code> (the number)</td>
+</tr>
+<tr class="odd">
+<td><code>0034913336701</code></td>
+<td><code>+34913336701</code></td>
+<td><code>+34913336701</code> (the number, another spelling)</td>
+</tr>
+<tr class="even">
+<td><code>foo@old.example.com</code></td>
+<td><code>foo@new.example.com</code></td>
+<td><code>foo@new.example.com</code> (follows the address)</td>
+</tr>
+<tr class="odd">
+<td><code>gogo@sylk.link</code></td>
+<td><code>gogo@sylk.link</code></td>
+<td><strong>unchanged</strong></td>
+</tr>
+<tr class="even">
+<td><code>1233</code></td>
+<td><code>1233@sylk.link</code></td>
+<td><strong>unchanged</strong> (an extension is not a number)</td>
+</tr>
+<tr class="odd">
+<td><code>Nissan Rustman</code></td>
+<td>anything</td>
+<td><strong>unchanged</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A SIP contact named by its own full address keeps that name. Its username is not a better
+name, and often a worse one: an account with <code>4444@sip2sip.info</code>, <code>4444@sip1.budgetphone.nl</code>
+and <code>4444@ag-projects.com</code> shows three contacts called <code>4444</code> once the domains are stripped.
+Blink states the constraint as <em>“a name has to be no worse after this function than
+before it”</em>.</p>
+<p>On 2026-09-16 a sylk-desktop build that wrote the username for every echo renamed 31
+contacts on one account this way before it was caught. The origin stamps (Chapter 26) named
+the device and the pass, and the names were restored from the <code>was</code> values in Blink’s
+<code>[ab] [origin]</code> log.</p>
+<p><em>Open:</em> the mobile heal (<code>_abCanonicalServerContact</code>) replaces any echo with the default
+address, so a contact named <code>gogo</code> or <code>Gogo</code> on <code>gogo@sylk.link</code> is renamed to
+<code>gogo@sylk.link</code> here and left alone by Blink and sylk-desktop. It does not loop, because
+nobody renames it back, but the clients disagree about it.</p>
+<h3 id="243-pstn-canonicalisation">24.3 PSTN canonicalisation</h3>
+<p><code>_abCanonicalPstn</code> / <code>_abApplyLeadingZeroRule</code> put every phone-number URI into
+the bare E.164 form chapter 3 specifies, with an 8-digit floor so short codes
+are left alone. <code>_abLogPstnCanon</code> prints what changed.</p>
+<h3 id="244-filing-into-the-kinded-groups">24.4 Filing into the kinded groups</h3>
+<p><code>_abFileIntoKindGroup(ab, kind, canonName, wanted, why)</code> and
+<code>_abFileConferenceContacts</code>: every conference contact belongs in Conference,
+every phone number in Tel, and so on. The rule is derived from the <strong>URI</strong>, not
+from a tag, so it is self-correcting.</p>
+<p><strong>Repair first, then file.</strong> The first version filed the <code>videoconference.</code>
+rows into the Conference group without repairing them, so the group ended up
+holding addresses that could not be dialled.</p>
+<p><code>_abNormalizePstnContacts(ab, sContacts)</code> is the generalised drift pass that
+carries all three of the above — PSTN URI, conference domain (by domain
+comparison), echoed name — over the server contacts in one walk.</p>
+<h3 id="245-the-email-group-is-no-longer-created">24.5 The Email group is no longer created</h3>
+<p>Nothing auto-generates it, on either client. <code>email</code> joins <code>_abNonGroupTags</code>
+alongside <code>bypassdnd</code>, <code>muted</code>, <code>noread</code>, <code>history</code>, <code>caregiver</code>, <code>autoanswer</code>
+and <code>phone</code>. An Email group that already exists is left alone — deleting
+somebody’s group is not a repair — so the one in the wild has to be removed by
+hand once every device is running the new build.</p>
+<h3 id="246-what-the-heal-may-still-delete">24.6 What the heal may still delete</h3>
+<p>The heal loop now reads, in order:</p>
+<pre><code>if (this._abGroupIsShared(g)) KEEP      // carries a kind: another client owns it
+if (healMembers)              KEEP      // it still has members we can account for
+else                          DELETE</code></pre>
+<p><code>_abGroupIsShared = (g) =&gt; !!this._abGroupKind(g)</code> is the whole of the first
+rule, and it is the one that was missing in chapter 23.</p>
+<hr />
+<h2 id="25-safe-healing-e164-addresses-and-adopted-display-names">25. Safe healing: E.164 addresses and adopted display names</h2>
+<p>Two clients share one document and each holds a rule about how an address should
+be spelled. That is enough to build a machine that never settles: A rewrites a
+contact its way and publishes, B fetches, rewrites it back its way and
+publishes, A fetches. Nobody is malfunctioning — each step is a client
+correctly applying its own rule — and the document changes for ever.</p>
+<p>A loop needs three ingredients, and removing any one of them stops it. The
+design removes all three.</p>
+<h3 id="251-one-canon-or-nothing-else-matters">25.1 One canon, or nothing else matters</h3>
+<p>Both clients must compute the <strong>same</strong> canonical form, so that healing is
+idempotent not just within a client but across them:</p>
+<pre><code>heal(heal(x)) == heal(x)          and          heal_blink(x) == heal_mobile(x)</code></pre>
+<p>For a PSTN address that canon is bare E.164 — <code>+3180081867</code>, no domain, <code>tel</code>
+type (R4, chapter 3). Mobile and sylk-desktop compute it with the same file,
+<code>addressbookRules.js</code> (<code>normalizeUri</code> / <code>canonicalPstn</code>); Blink uses <code>pstn_e164</code> /
+<code>canonical_pstn_uri</code>. If those two
+ever disagree about one number, no amount of scheduling saves the document:
+each client will forever “correct” the other. Scheduling is the second line of
+defence; agreement is the first.</p>
+<h3 id="252-heal-after-adopting-never-before">25.2 Heal after adopting, never before</h3>
+<p>The heal runs on the <strong>merged</strong> state: fetch the server document, apply it
+locally, and only then look for rows to repair.</p>
+<pre><code>fetch → apply → settle → heal → publish</code></pre>
+<p>Healing local rows before the snapshot arrives is worse than useless. Those rows
+are about to be overwritten by the server’s copy, so the work is thrown away —
+and then the server’s copy lands carrying the old spelling, which the client
+sees as fresh damage and heals again on the next launch. That is the shape of a
+loop that looks like a stubborn bug: the same contacts repaired every single
+start.</p>
+<ul>
+<li><strong>Mobile</strong>: the heal is triggered from <code>_abMarkImportFinished</code>, the hook that
+fires when the addressbook is genuinely synced — never from the boot timer it
+used to hang off.</li>
+<li><strong>Blink</strong>: <code>repair_contact_addresses()</code> runs from
+<code>calls_group_startup_check(xcap_loaded=True)</code>, reached through
+<code>_callsGroupAfterReload</code>, which <code>ContactListModel</code> schedules
+<code>XCAP_SETTLE_DELAY</code> after the document was applied.</li>
+</ul>
+<h3 id="253-once-per-run-not-once-per-change">25.3 Once per run, not once per change</h3>
+<p>A heal triggered by a <em>change</em> is a feedback path: it sees its own published
+result come back and acts on it. A heal triggered by <em>startup</em> is not — it runs,
+converges, and stops.</p>
+<p>Both clients hold a per-run guard (mobile <code>_abHealedAccounts</code>, Blink
+<code>_conference_uris_repaired</code>). This also makes the log diagnostic: a heal that
+finds work every launch means something else is un-healing it between runs, and
+that something is the bug. Running the heal more often would hide it.</p>
+<h3 id="254-a-heal-is-never-announced">25.4 A heal is never announced</h3>
+<p><code>application/sylk-addressbook-update</code> says “a person changed something, come and
+look”. A heal is derived state: every device computes the same result from the
+same document, so telling them is redundant at best, and at worst it is the
+loop’s carrier signal — A’s heal wakes B, whose heal writes back, which wakes A.</p>
+<p>So every reload-driven repair runs inside a suppression scope (chapter 5 of the
+message spec): mobile for the whole of <code>_abRunReconcile</code>, Blink around
+<code>_callsGroupAfterReload</code>, sylk-desktop around its startup heal. Scope it to the work,
+never to a clock — a timed window drops a user’s edit that lands inside it and lets a
+repair through on whichever account’s window has expired.</p>
+<p><strong>Nor is a copy.</strong> Blink keeps one addressbook for all its accounts: applying one account’s
+fetched document writes the same contacts into every other account’s document, through the
+same mutators a user edit uses. The <code>AddressbookManager.applying_remote_data</code> counter covered
+that stretch, but the notifications it causes are delivered later, on Blink’s GUI thread,
+after the counter is back to zero. On 2026-09-17 Blink therefore announced 16 copied contacts
+to every device. python3-sipsimple now decides at the moment of posting: every
+<code>XCAPManagerDid*</code> notification carries <code>data.remote</code>, true while the posting thread is
+applying a server document (<code>xcap.applying_remote_document()</code>), and Blink ignores those.</p>
+<h3 id="255-display-names-adopt-only-into-a-hole">25.5 Display names: adopt only into a hole</h3>
+<p>The same rules, plus one about precedence.</p>
+<p>A name is <strong>data</strong> only if someone typed it. A name that echoes the address —
+empty, equal to the URI, the URI without its <code>@</code>, the username, or any <code>+</code>/<code>00</code>
+variant of those (R3) — is the <em>absence</em> of a name wearing the address as a
+placeholder. Only the absence may be filled.</p>
+<pre><code>user-typed name  &gt;  address-book name  &gt;  server name  &gt;  echo</code></pre>
+<ul>
+<li>Adoption is <strong>terminal</strong>: the moment a real name lands, the echo test stops
+matching, so the next launch leaves it alone. That is what makes it “once”
+without needing a flag.</li>
+<li>Adoption is <strong>into a hole on both sides</strong>. If the server already carries a
+real name, that name wins and the OS phonebook does not override it — two
+clients each preferring their own real name is exactly the oscillation this
+chapter exists to prevent. Push-up (chapter 8) still applies: a real local
+name replaces a server <em>echo</em>, never a server name.</li>
+<li>A phone contact with no card in the OS address book keeps the number as its
+display name. That is not a failure to heal; there is simply nothing to adopt.</li>
+</ul>
+<p><strong>Between two echoes there is no authority — compute the answer.</strong> When the
+server’s name and the local name are <em>both</em> echoes, neither side is a
+tie-breaker, and treating one as such produces a loop:</p>
+<ul>
+<li>Adopting the server’s echo over the local one is only meaningful where a
+canonical form exists. It exists for a <strong>phone number</strong> (bare E.164) and does
+not exist for a <strong>SIP address</strong>. <code>Gogo</code> and <code>gogo@sylk.link</code> are both echoes of
+<code>gogo@sylk.link</code>; one is what a person should read and the other is the raw
+address, and there is no rule making the server’s copy the better one. On
+2026-09-09 a rule that missed this distinction rewrote 20 contacts to their own
+addresses in a single pass. <code>_localNameStale</code> is now gated on
+<code>utils.isPhoneNumber(c.uri)</code> for exactly that reason.</li>
+<li>Even for a number, the server is a peer and not an oracle. The same rule then
+adopted <code>0034913336701</code> over <code>+34913336701</code>, because the other client had just
+pushed the wire form up. So the pass does not copy a name at all in this case —
+it sets <code>_abCanonicalPstn(c.uri)</code>, a pure function of the number and the dial
+plan that every client computes identically. Both ends converge on one string
+and the next pass is a no-op, whichever client ran first.</li>
+</ul>
+<blockquote>
+<p>When two clients disagree about a value that is <em>derivable</em>, neither adopts the
+other’s — both derive it. Adoption is for values only a person can supply.</p>
+</blockquote>
+<p>A user-typed name is not derivable, so the server remains authoritative for it
+(<code>sNameReal</code> is unchanged and still wins). An echo is derivable, so it is
+computed from the address on both sides. Blink’s half of this is
+<code>echoed_name_replacement()</code>, which recognises the same <code>+</code>/<code>00</code> variants; see
+PSTN-CALLS-GROUP.md §36.2 and §40.</p>
+<h3 id="256-the-lifetime-of-the-addressbook-at-start">25.6 The lifetime of the addressbook at start</h3>
+<p>The stages, and the log line that marks each. Anything that writes to the
+document before the last of them is writing against a view it has not finished
+loading.</p>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 37%" />
+<col style="width: 31%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Stage</th>
+<th>Mobile</th>
+<th>Blink</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Snapshot requested</td>
+<td>the lib fetches on <code>registered</code></td>
+<td><code>XCAPManagerDidChangeState</code> → <code>fetching</code></td>
+</tr>
+<tr class="even">
+<td>Snapshot arrived</td>
+<td><code>[ab] [lifecycle] snapshot FETCHED … N contacts, M groups</code></td>
+<td><code>XCAPManagerDidReloadData</code></td>
+</tr>
+<tr class="odd">
+<td>Being applied</td>
+<td><code>[ab] [lifecycle] applying the server addressbook (edge=…)</code></td>
+<td><code>Addressbook of X: a new document arrived, applying it</code></td>
+</tr>
+<tr class="even">
+<td>Applied</td>
+<td><code>[ab] [lifecycle] applied in Nms, K write(s) issued</code></td>
+<td>manager returns to <code>insync</code></td>
+</tr>
+<tr class="odd">
+<td>Writable</td>
+<td><code>[ab] [lifecycle] writes ENABLED</code> (or <code>BLOCKED — &lt;reasons&gt;</code>)</td>
+<td><code>Addressbook of X is in sync and open for writes</code></td>
+</tr>
+<tr class="even">
+<td>Stable</td>
+<td><code>[ab] [lifecycle] addressbook STABLE … open for writes</code></td>
+<td>—</td>
+</tr>
+<tr class="odd">
+<td>Healing</td>
+<td><code>[ab] [lifecycle] heal starting/finished</code></td>
+<td><code>Addressbook: healing pass starting/finished</code></td>
+</tr>
+</tbody>
+</table>
+<p>Mobile’s write gate is logged on the <strong>edge</strong>, not per call — it is consulted on
+every write, so the value would drown the log while the transition is the thing
+anyone wants: when the account became writable, and if it never did, which of
+<code>registered</code> / <code>connection ready</code> / <code>server snapshot</code> is missing.</p>
+<p>After the healing pass finishes, a contact change is a user edit by definition,
+and IS announced.</p>
+<h3 id="257-reading-the-os-phonebook-and-never-asking-for-it">25.7 Reading the OS phonebook, and never asking for it</h3>
+<p>Adoption needs the phonebook, and reading the phonebook is what makes Android and
+iOS show a permission dialog. Those two facts pulled in opposite directions long
+enough to leave the feature dead.</p>
+<p><strong>How it was broken.</strong> <code>getABContacts()</code> ran only on user intent — opening the
+Phonebook tab, the unified search, or the conference invite picker — because the
+prompt belongs on a tap. Adoption was then bolted onto the photo pass that runs
+off the <code>addresBookLoaded</code> edge. A launch where none of those three screens was
+opened never read the phonebook at all, so nothing was ever adopted, and a number
+sitting in the OS address book under a real name kept displaying as the number.
+On top of that the photo pass began with <code>if (avatarPhotos is empty) return</code>, so
+even when the phonebook <em>had</em> been read, a set of cards carrying names but no
+thumbnails aborted the pass and took the name adoption with it.</p>
+<p><strong>The split that resolves it.</strong> <em>Prompting</em> is user intent; <em>reading</em> is not.</p>
+<ul>
+<li><code>_abAdoptPhonebookNames()</code> runs at the end of the heal and calls
+<code>Contacts.checkPermission()</code>, which asks the OS what it already decided and
+never shows a dialog.</li>
+<li><code>authorized</code> → read silently. The user granted access for this.</li>
+<li>anything else → one log line and return. No prompt, no banner, no retry. The
+next Phonebook tap prompts, as it always did, and picks the work up.</li>
+<li><code>abPermissionDenied</code> short-circuits ahead of even the permission check. A
+refusal already given is final for the launch, and a background repair must
+never be the thing that goes near the phonebook after the user said no.</li>
+</ul>
+<p><code>addresBookLoaded</code> is <strong>not</strong> the flag for “we have a phonebook”: it is also
+raised on a denial to stop the retry loop. <code>_abPhonebookRead</code>, set only by a
+successful <code>getABContacts()</code>, is the one that means what it says. Conflating them
+is what made a denied account take the “already read this launch” branch.</p>
+<p>The photo pass’s guard now passes if <em>any</em> of <code>avatarPhotos</code>, <code>avatarNames</code> or
+<code>avatarEmails</code> is populated, since it carries three things off the phonebook and
+must not be gated on one of them.</p>
+<h3 id="258-diagnostics-what-the-startup-log-will-show-you">25.8 Diagnostics: what the startup log will show you</h3>
+<p>Two dumps, once per account per launch, both after the repairs rather than
+before — the point is the settled state, not a snapshot of something mid-repair.</p>
+<ul>
+<li><code>[ab] [kind]</code> — every server group with its members named, six per line, capped
+at 60 with <code>… and N more</code>. A member the addressbook cannot resolve prints as
+<code>&lt;id&gt;</code> in angle brackets, which is how an orphaned group reference shows up.</li>
+<li><code>[ab] [dump]</code> — every row of the local <code>contacts</code> table: address, name, id,
+<code>remote=&lt;local-only&gt;</code> for a row that has never replicated, the extra URI list,
+tags, org, email, whether a public key is held. A name that is only an echo is
+flagged <code>(echo)</code>, so the rows still waiting for a real name are visible at a
+glance instead of looking like they have one.</li>
+</ul>
+<p>The <code>uris</code> column is a <strong>comma-separated string</strong> (<code>contact.uris.toString()</code> on
+write, <code>String(row.uris).split(',')</code> on read), not JSON. The first version of the
+dump parsed it as JSON and printed <code>&lt;unparseable&gt;</code> for every populated row, which
+said more about the dump than about the data. It now also marks a repeat inside
+the list as <code>DUPLICATE(...)</code> — the §16.1 case the heal removes.</p>
+<p>Filter on <code>[ab]</code> for everything addressbook, <code>[ab] [lifecycle]</code> for the
+fetch → apply → writes-enabled timeline, <code>[ab] [name]</code> for adoptions and repairs.</p>
+<hr />
+<h2 id="26-origin-stamps-who-changed-an-entry-and-when">26. Origin stamps: who changed an entry, and when</h2>
+<p>Every contact and group a client writes carries five attributes naming the device that made
+the change. Sylk mobile, sylk-desktop and Blink desktop implement the same rules and produce
+byte-identical fingerprints:</p>
+<ul>
+<li><strong>Sylk mobile:</strong> <code>app/addressbookOrigin.js</code>. <code>test_addressbook_origin.cjs</code> checks it against
+vectors computed by Blink’s code.</li>
+<li><strong>sylk-desktop:</strong> <code>src/app/addressbookOrigin.js</code>, the same file copied verbatim. Change it
+here and copy it there.</li>
+<li><strong>Blink desktop:</strong> <code>AddressbookOrigin.py</code>.</li>
+</ul>
+<h3 id="261-the-attributes">26.1 The attributes</h3>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 79%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>attribute</th>
+<th>value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>modified_by</code></td>
+<td>id of the writing device (mobile: <code>this.deviceId</code>; Blink: bare instance id; sylk-desktop: a UUID persisted under <code>addressbookOriginDeviceId</code>)</td>
+</tr>
+<tr class="even">
+<td><code>modified_agent</code></td>
+<td>the device’s user agent, e.g. <code>Blink Mobile 4.1.0 (Pixel 8 on android)</code></td>
+</tr>
+<tr class="odd">
+<td><code>modified_at</code></td>
+<td>UTC, ISO 8601 to the second: <code>2026-09-16T11:44:07Z</code></td>
+</tr>
+<tr class="even">
+<td><code>modified_reason</code></td>
+<td>why an automatic write happened; empty for a user edit</td>
+</tr>
+<tr class="odd">
+<td><code>modified_hash</code></td>
+<td>fingerprint of the content at the moment of stamping</td>
+</tr>
+</tbody>
+</table>
+<p>All values are strings (Chapter 15). Treat the set of reasons as open. This client writes
+<code>repair</code>, <code>file-into-kind-group</code>, <code>create-group</code>, <code>reserved-id</code>, <code>group-kind</code>,
+<code>fold-duplicates</code>, <code>group-members</code>, <code>name-sync</code>, <code>migrate</code>, <code>migrate-groups</code>,
+<code>migration-marker</code> and <code>keys</code>. sylk-desktop writes <code>conversation-history</code>, <code>message-sender</code>,
+<code>name-cache</code>, <code>repair</code>, <code>file-into-kind-group</code> and <code>offline-queue</code>. Blink writes <code>repair</code>,
+<code>file-into-kind-group</code>, <code>ensure-group</code>, <code>group-kind</code>, <code>call-history</code>, <code>backfill</code> and <code>block</code>.</p>
+<h3 id="262-when-a-write-is-stamped">26.2 When a write is stamped</h3>
+<ul>
+<li><strong>Content changed:</strong> the write is stamped with this device. For a contact, the content is its
+name, URIs, presence handling or dialog handling. For a group, it is its name or members.</li>
+<li><strong>Content unchanged:</strong> the write carries the server’s current stamp unchanged, for example a
+re-put of the same data or a change to other attributes only. A stale local copy of the bag
+therefore cannot roll a stamp back.</li>
+<li><strong>Applying a fetched document:</strong> nothing is stamped. The writer’s stamp is kept.</li>
+</ul>
+<h3 id="263-fingerprint">26.3 Fingerprint</h3>
+<ol type="1">
+<li>Build the object below, with keys in sorted order.</li>
+<li>Serialise it compactly (<code>,</code> and <code>:</code> separators, non-ASCII left unescaped).</li>
+<li>Take the SHA-1 of the UTF-8 bytes and keep the first 16 hex characters.</li>
+</ol>
+<p><strong>Contact:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true"></a><span class="fu">{</span><span class="dt">&quot;dialog&quot;</span><span class="fu">:</span><span class="ot">[</span><span class="st">&quot;&lt;policy&gt;&quot;</span><span class="ot">,</span><span class="er">&lt;subscribe&gt;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true"></a> <span class="dt">&quot;name&quot;</span><span class="fu">:</span><span class="st">&quot;&lt;name&gt;&quot;</span><span class="fu">,</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true"></a> <span class="dt">&quot;presence&quot;</span><span class="fu">:</span><span class="ot">[</span><span class="st">&quot;&lt;policy&gt;&quot;</span><span class="ot">,</span><span class="er">&lt;subscribe&gt;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true"></a> <span class="dt">&quot;uris&quot;</span><span class="fu">:</span><span class="ot">[[</span><span class="st">&quot;&lt;uri, trimmed&gt;&quot;</span><span class="ot">,</span><span class="st">&quot;&lt;type or empty&gt;&quot;</span><span class="ot">],</span> <span class="er">...</span><span class="ot">]</span><span class="fu">}</span></span></code></pre></div>
+<p>Sort <code>uris</code> by uri, then by type. A missing handling counts as <code>["default",false]</code>. <code>subscribe</code>
+is a boolean, and the strings <code>"true"</code> and <code>"1"</code> count as true.</p>
+<p><strong>Group:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true"></a><span class="fu">{</span><span class="dt">&quot;contacts&quot;</span><span class="fu">:</span><span class="ot">[</span><span class="st">&quot;&lt;member id&gt;&quot;</span><span class="ot">,</span> <span class="er">...</span><span class="ot">]</span><span class="fu">,</span><span class="dt">&quot;name&quot;</span><span class="fu">:</span><span class="st">&quot;&lt;name&gt;&quot;</span><span class="fu">}</span></span></code></pre></div>
+<p>Sort <code>contacts</code>. Members sent as full contact objects contribute only their <code>id</code>.</p>
+<p>Attributes are never part of the fingerprint. The bag holds values that one client registers
+and another does not, so a hash over the attributes would not survive a round trip.</p>
+<h3 id="264-reading-a-stamp">26.4 Reading a stamp</h3>
+<p>The bag is carried through verbatim (Chapter 16.4), so a client that edits an entry without
+stamping it leaves the previous stamp on content that stamp never vouched for. On arrival,
+recompute the fingerprint:</p>
+<ul>
+<li><strong>Matches <code>modified_hash</code>:</strong> the entry was changed by <code>modified_by</code> at <code>modified_at</code>.</li>
+<li><strong>Does not match:</strong> the entry was changed by a client that does not stamp, some time after
+that stamp.</li>
+<li><strong>No stamp at all:</strong> the entry has never been stamped.</li>
+</ul>
+<p>A removal carries no stamp, so the device that deleted an entry is unknown.</p>
+<h3 id="265-implementation-here">26.5 Implementation here</h3>
+<ul>
+<li><strong>Where writes are stamped.</strong> <code>_abInstallOriginStamping(ab)</code> wraps <code>addContact</code>,
+<code>updateContact</code>, <code>addGroup</code> and <code>updateGroup</code> on the addressbook instance when the listeners
+are bound, so every write path is stamped. Before calling the library it reads the server’s
+copy with <code>getContact</code> / <code>getGroup</code>, because the library overwrites its cache synchronously.
+<code>addGroupMember</code> / <code>deleteGroupMember</code> send no body and are not stamped; nothing uses them.</li>
+<li><strong>How the reason is passed.</strong> <code>_abExecWhy(reason, label, fn, change)</code> is <code>_abExec</code> with the
+reason set only during the synchronous library call. <code>_abExec</code> runs <code>fn</code> inside the Promise
+executor, so the reason cannot leak into another write across an <code>await</code>. Without an explicit
+reason, a write made during the migration gets <code>migrate</code> (from <code>_abCtx</code>).</li>
+<li><strong>What gets logged.</strong> <code>_abLogOrigins(account)</code> runs on <code>dataLoaded</code> and <code>dataUpdated</code>. It
+compares the addressbook with the snapshot in AsyncStorage (<code>ab_origin_snapshot.&lt;account&gt;</code>)
+and logs:</li>
+</ul>
+<pre><code>[ab] [origin] ag@sylk.link: 2 change(s) since the last document
+[ab] [origin]   update contact id207347636fab4309 &quot;Adrian G&quot; (was &quot;+31646630425&quot;) -- by Blink 9.8.0 (MacOSX) device 1abd76fb-... at 2026-09-16T11:44:06Z (repair)
+[ab] [origin]   add contact id3 &quot;338318&quot; -- by a client that does not stamp (never stamped)</code></pre>
+<p>The first document ever seen for an account only records a baseline.</p>
+<hr />
+<h2 id="27-sylk-desktop">27. sylk-desktop</h2>
+<p>sylk-desktop (Electron, sylkrtc.js) had no addressbook rules of its own: it indexed contacts by
+the address as stored, created contacts named by their URI, re-added a contact for every
+conversation on every start, and knew nothing of groups, kinds or the other clients. It now
+follows this document. Everything below lives in <code>src/app/</code>; the provider is
+<code>AddressbookProvider.tsx</code>.</p>
+<h3 id="271-shared-files">27.1 Shared files</h3>
+<table>
+<colgroup>
+<col style="width: 24%" />
+<col style="width: 52%" />
+<col style="width: 24%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>file</th>
+<th>shared with</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>addressbookRules.js</code></td>
+<td>sylk-mobile <code>app/addressbookRules.js</code>, verbatim</td>
+<td>URI canon, echo names, groups, kinds (Chapter 25.1)</td>
+</tr>
+<tr class="even">
+<td><code>addressbookOrigin.js</code></td>
+<td>sylk-mobile <code>app/addressbookOrigin.js</code>, verbatim</td>
+<td>origin stamps (Chapter 26)</td>
+</tr>
+<tr class="odd">
+<td><code>addressbookNotify.js</code></td>
+<td>sylk-mobile <code>app/addressbookNotify.js</code>, verbatim</td>
+<td><code>application/sylk-addressbook-update</code> wire format and throttles</td>
+</tr>
+</tbody>
+</table>
+<p>Change them in sylk-mobile and copy them over. Each has a standalone test in both trees
+(<code>test_addressbook_rules.cjs</code>, <code>test_addressbook_origin.cjs</code>, <code>test_addressbook_notify.cjs</code>).
+<code>addressbookAccountRules.js</code> binds the rules to the live config: <code>config.domain</code>,
+<code>config.defaultConferenceDomain</code>, and <code>config.pstn.rules</code> from the server’s sylk configuration
+(default <code>{replacePlus: '00'}</code>), plus the per-account <strong>Replace 0 with</strong> preference
+(<code>pstnPreferences.js</code>, ⋮ menu → Phone numbers), so a national number has the same canonical
+form as on a mobile with the same setting.</p>
+<h3 id="272-one-write-boundary">27.2 One write boundary</h3>
+<p><code>installOriginStamping</code> wraps <code>addContact</code>, <code>updateContact</code>, <code>addGroup</code>, <code>updateGroup</code>,
+<code>deleteContact</code> and <code>deleteGroup</code> on the addressbook instance. Every write, whichever path
+makes it, is:</p>
+<ol type="1">
+<li><strong>built</strong> by <code>contactPayload.forServer</code> (contacts only): canonical addresses de-duplicated
+by value, server URI ids reused, <code>tel</code>/<code>sip</code> types (other types such as <code>XMPP</code> kept), one
+default in <code>defaultUri</code>, dialog/presence and the attributes bag carried from the server
+copy, client-local fields dropped, names per Chapter 24.2;</li>
+<li><strong>stamped</strong> (Chapter 26), with the reason set by <code>withAddressbookReason</code>;</li>
+<li><strong>reported</strong> to the notifier (27.6) once the server answers.</li>
+</ol>
+<p>An automatic write never replaces a real server name with an echo; a user’s edit may.</p>
+<h3 id="273-matching-by-canonical-address">27.3 Matching by canonical address</h3>
+<p>The provider’s contact index (<code>contactIndex.js</code>) keys every contact by <code>normServerUri</code> of each
+address it owns, so a lookup in any spelling finds it: <code>+31618853125@sylk.link</code> finds
+<code>+31618853125</code>, <code>…@videoconference.X</code> finds the room at <code>conference.X</code>. Several owners of one
+address are ordered lowest id first (16.1); <code>best(uri)</code> prefers the one whose default address
+it is.</p>
+<h3 id="274-contacts-created-from-conversations">27.4 Contacts created from conversations</h3>
+<p>Two paths add a contact without the user asking: <code>updateAddressbook()</code> on start, for
+conversations without a contact, and an incoming message from an unknown sender.
+<code>conversationContacts.js</code> skips <code>@local</code>, IP literals, conference anomalies, guests,
+anonymous, the own account, an address a contact already owns in any spelling, an address
+claimed in the last 30 s, and an address whose contact was deleted (27.5). A display name is
+adopted only into a hole (25.5).</p>
+<h3 id="275-deleted-contacts-stay-deleted">27.5 Deleted contacts stay deleted</h3>
+<p><code>addressTombstones.js</code> infers deletes by comparing each authoritative document with the
+addresses seen in the last one (the seen-baseline of Chapter 7, persisted per account). An
+address that disappeared is not re-added from its conversation until it comes back into the
+addressbook or the user adds the contact themselves. The first document is a baseline; an empty
+document after a non-empty one is a failed fetch (Chapter 11) and ignored.</p>
+<h3 id="276-change-notifications">27.6 Change notifications</h3>
+<p><code>addressbookNotifier.js</code> sends <code>application/sylk-addressbook-update</code> after writes the server
+confirmed (cleartext, <code>skipJournal</code>, <code>skipDisposition</code>) and refetches with <code>Addressbook.refresh()</code>
+when another device announces one. Ticks are never stored or shown: they are dropped in
+<code>incomingMessage</code> (Blink’s SIP tick, honoured only from the own account), <code>outgoingMessage</code>
+(another device’s carbon), <code>sendingMessage</code> and the journal replay. sylkrtc.js gained
+<code>Account.fetchAddressbook(cb)</code>, <code>Addressbook.refresh(cb)</code> and the <code>skipJournal</code> /
+<code>skipDisposition</code> options on <code>sendMessage</code>, as react-native-sylkrtc has.</p>
+<h3 id="277-remote-conversation-removes">27.7 Remote conversation removes</h3>
+<p><code>conversationRemoves.js</code> applies Chapter 16.3: another device’s remove deletes the
+conversation only when its contact is gone; a live remove that arrives first is parked until the
+addressbook shows the address gone (ten minutes at most, in memory); a journal remove for a live
+contact, or one older than the newest message, is dropped.</p>
+<h3 id="278-kinded-groups-and-the-startup-heal">27.8 Kinded groups and the startup heal</h3>
+<p>A contact this client creates is filed into Tel or Conference once the server has it
+(<code>kindGroups.js</code>: kind → reserved id → name; a missing group is created under its reserved id
+with its kind). Once per account per run, 15 s after the first fetched document and with
+announcements suppressed, <code>addressbookHeal.js</code> repairs contacts (canonical addresses,
+duplicate addresses, names per 24.2) and then files every qualifying contact that is not a
+member, one write per group.</p>
+<h3 id="279-the-offline-queue">27.9 The offline queue</h3>
+<p>An operation made before the addressbook is ready is queued and replayed on the next load.
+Each entry records the server copy’s fingerprint at queue time, and <code>offlineQueue.decide</code>
+replays it only when that copy is unchanged and the write is not already applied: an update
+of a contact another device edited since, a delete of a contact edited since, or an add of an
+address someone else created is dropped and logged (<code>[ab] [queue] … not replayed</code>). Entries
+from older builds carry no fingerprint and are replayed only when no other device has stamped
+the contact.</p>
+
 </body></html>
